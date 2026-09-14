@@ -39,6 +39,31 @@ def test_parse_personal_page_accepts_grouped_values() -> None:
     assert status.until_next_level == Decimal("2252.73")
 
 
+def test_parse_personal_page_accepts_missing_next_level_at_highest_tier() -> None:
+    html = """
+    <section class="discount-program">
+      Ваша текущая скидка5%
+      Ваши покупки в этом месяце 3,824.71
+    </section>
+    """
+
+    status = parse_personal_page(html)
+
+    assert status.discount_percent == Decimal("5")
+    assert status.monthly_purchases == Decimal("3824.71")
+    assert status.until_next_level == Decimal("0")
+
+
+def test_parse_personal_page_requires_next_level_below_highest_tier() -> None:
+    html = """
+    Ваша текущая скидка 3%
+    Ваши покупки в этом месяце 750.50
+    """
+
+    with pytest.raises(GippoPageError, match="until_next_level"):
+        parse_personal_page(html)
+
+
 @pytest.mark.parametrize(
     ("raw_purchases", "expected_purchases"),
     (

@@ -55,6 +55,8 @@ _VALUE_PATTERNS = {
     ),
 }
 
+_FIVE_PERCENT_THRESHOLD = Decimal("1000")
+
 
 def _to_decimal(raw_value: str) -> Decimal:
     raw_value = raw_value.strip()
@@ -80,11 +82,20 @@ def parse_personal_page(html: str) -> CabinetStatus:
     text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
     values: dict[str, Decimal] = {}
 
-    for field, pattern in _VALUE_PATTERNS.items():
+    for field in ("discount_percent", "monthly_purchases"):
+        pattern = _VALUE_PATTERNS[field]
         match = pattern.search(text)
         if match is None:
             raise GippoPageError(f"The cabinet page does not contain {field}")
         values[field] = _to_decimal(match.group(1))
+
+    until_next_level_match = _VALUE_PATTERNS["until_next_level"].search(text)
+    if until_next_level_match is None:
+        if values["monthly_purchases"] < _FIVE_PERCENT_THRESHOLD:
+            raise GippoPageError("The cabinet page does not contain until_next_level")
+        values["until_next_level"] = Decimal("0")
+    else:
+        values["until_next_level"] = _to_decimal(until_next_level_match.group(1))
 
     return CabinetStatus(
         discount_percent=values["discount_percent"],
