@@ -35,13 +35,14 @@ def format_status(status: CabinetStatus) -> str:
     """Format the cabinet status as a concise Russian Telegram message."""
 
     projected_discount = _projected_discount_percent(status.monthly_purchases)
-    return "\n".join(
-        (
-            "Ваша текущая скидка: "
-            f"{_format_decimal(status.discount_percent, 2, trim_trailing=True)}%",
-            "Прогноз скидки на следующий месяц: "
-            f"{_format_decimal(projected_discount, 2, trim_trailing=True)}%",
-            f"Покупки в этом месяце: {_format_decimal(status.monthly_purchases, 2)} руб.",
+    lines = [
+        f"Ваша текущая скидка: {_format_decimal(status.discount_percent, 2, trim_trailing=True)}%",
+        "Прогноз скидки на следующий месяц: "
+        f"{_format_decimal(projected_discount, 2, trim_trailing=True)}%",
+        f"Покупки в этом месяце: {_format_decimal(status.monthly_purchases, 2)} руб.",
+    ]
+    if status.until_next_level > 0:
+        lines.append(
             f"До следующего уровня: {_format_decimal(status.until_next_level, 2)} руб.",
         )
-    )
+    return "\n".join(lines)

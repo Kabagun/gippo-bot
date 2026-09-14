@@ -5,8 +5,7 @@ A small Telegram bot that signs in to the GIPPO loyalty cabinet and shows:
 - the current discount;
 - the projected discount for the next month based on current-month purchases;
 - purchases in the current month;
-- the amount remaining until the next level, reported as zero when the account
-  has already reached the published maximum tier;
+- the amount remaining until the next level while another level is available;
 - protected GIPPO and Belmarket loyalty-card images with every `/start` response.
 
 The bot uses Telegram long polling, so it does not need a public HTTP endpoint.

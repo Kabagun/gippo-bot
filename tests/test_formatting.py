@@ -10,15 +10,15 @@ from gippo_bot.formatting import format_status
 def test_format_status_uses_russian_decimal_notation() -> None:
     status = CabinetStatus(
         discount_percent=Decimal("1"),
-        monthly_purchases=Decimal("1247.2"),
+        monthly_purchases=Decimal("247.2"),
         until_next_level=Decimal("252.73"),
         fetched_at=datetime.now(UTC),
     )
 
     assert format_status(status) == (
         "Ваша текущая скидка: 1%\n"
-        "Прогноз скидки на следующий месяц: 5%\n"
-        "Покупки в этом месяце: 1 247,20 руб.\n"
+        "Прогноз скидки на следующий месяц: 1%\n"
+        "Покупки в этом месяце: 247,20 руб.\n"
         "До следующего уровня: 252,73 руб."
     )
 
@@ -47,17 +47,16 @@ def test_format_status_projects_next_month_discount_at_tier_boundaries(
     assert projected_line == f"Прогноз скидки на следующий месяц: {expected_discount}"
 
 
-def test_format_status_projects_live_grouped_purchase_value() -> None:
+def test_format_status_omits_next_level_at_highest_tier() -> None:
     status = CabinetStatus(
-        discount_percent=Decimal("1"),
+        discount_percent=Decimal("5"),
         monthly_purchases=Decimal("1022"),
         until_next_level=Decimal("0"),
         fetched_at=datetime.now(UTC),
     )
 
     assert format_status(status) == (
-        "Ваша текущая скидка: 1%\n"
+        "Ваша текущая скидка: 5%\n"
         "Прогноз скидки на следующий месяц: 5%\n"
-        "Покупки в этом месяце: 1 022,00 руб.\n"
-        "До следующего уровня: 0,00 руб."
+        "Покупки в этом месяце: 1 022,00 руб."
     )
