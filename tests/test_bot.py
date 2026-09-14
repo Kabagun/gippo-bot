@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 from gippo_bot.bot import (
@@ -14,6 +15,7 @@ from gippo_bot.bot import (
     _refresh_keyboard,
     _send_card,
     _send_start_messages,
+    _send_status,
     _validate_card_images,
     build_application,
     refresh_status,
@@ -123,8 +125,30 @@ def test_refresh_updates_only_existing_status_message(
     asyncio.run(refresh_status(update, context))
 
     query.answer.assert_awaited_once_with("Обновляю…")
-    query.edit_message_text.assert_awaited_once_with("new status", reply_markup=_refresh_keyboard())
+    query.edit_message_text.assert_awaited_once_with(
+        "new status",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_refresh_keyboard(),
+    )
     send_card.assert_not_awaited()
+
+
+def test_status_message_uses_html_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
+    effective_message = SimpleNamespace(reply_text=AsyncMock())
+    update = SimpleNamespace(effective_message=effective_message)
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"gippo_client": object()}))
+    monkeypatch.setattr(
+        "gippo_bot.bot._load_message",
+        AsyncMock(return_value="<b>status</b>"),
+    )
+
+    asyncio.run(_send_status(update, context, reply_markup=_refresh_keyboard()))
+
+    effective_message.reply_text.assert_awaited_once_with(
+        "<b>status</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_refresh_keyboard(),
+    )
 
 
 def test_unchanged_refresh_status_does_not_fail(monkeypatch: pytest.MonkeyPatch) -> None:

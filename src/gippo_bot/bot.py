@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
@@ -77,7 +78,7 @@ async def _load_message(client: GippoClient) -> str:
     except Exception:
         LOGGER.exception("Unexpected error while loading the GIPPO cabinet status")
         return "Временная ошибка. Попробуйте ещё раз позже."
-    return format_status(status)
+    return format_status(status, telegram_html=True)
 
 
 def _validate_card_images(settings: BotSettings) -> None:
@@ -124,7 +125,11 @@ async def _send_status(
     client: GippoClient = context.application.bot_data["gippo_client"]
     message = await _load_message(client)
     if update.effective_message is not None:
-        await update.effective_message.reply_text(message, reply_markup=reply_markup)
+        await update.effective_message.reply_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
 
 
 async def _send_start_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -171,7 +176,11 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     client: GippoClient = context.application.bot_data["gippo_client"]
     message = await _load_message(client)
     try:
-        await query.edit_message_text(message, reply_markup=_refresh_keyboard())
+        await query.edit_message_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=_refresh_keyboard(),
+        )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise

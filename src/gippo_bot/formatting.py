@@ -31,14 +31,23 @@ def _projected_discount_percent(monthly_purchases: Decimal) -> Decimal:
     return Decimal("1")
 
 
-def format_status(status: CabinetStatus) -> str:
-    """Format the cabinet status as a concise Russian Telegram message."""
+def format_status(status: CabinetStatus, *, telegram_html: bool = False) -> str:
+    """Format the cabinet status as a concise Russian message."""
 
     projected_discount = _projected_discount_percent(status.monthly_purchases)
+    current_discount = (
+        f"🏷 Текущая скидка: {_format_decimal(status.discount_percent, 2, trim_trailing=True)}%"
+    )
+    next_discount = (
+        f"✨ Скидка в следующем месяце: "
+        f"{_format_decimal(projected_discount, 2, trim_trailing=True)}%"
+    )
+    if telegram_html:
+        current_discount = f"<b>{current_discount}</b>"
+        next_discount = f"<b>{next_discount}</b>"
     lines = [
-        f"Ваша текущая скидка: {_format_decimal(status.discount_percent, 2, trim_trailing=True)}%",
-        "Прогноз скидки на следующий месяц: "
-        f"{_format_decimal(projected_discount, 2, trim_trailing=True)}%",
+        current_discount,
+        next_discount,
         f"Покупки в этом месяце: {_format_decimal(status.monthly_purchases, 2)} руб.",
     ]
     if status.until_next_level > 0:

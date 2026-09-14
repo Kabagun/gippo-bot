@@ -16,8 +16,8 @@ def test_format_status_uses_russian_decimal_notation() -> None:
     )
 
     assert format_status(status) == (
-        "Ваша текущая скидка: 1%\n"
-        "Прогноз скидки на следующий месяц: 1%\n"
+        "🏷 Текущая скидка: 1%\n"
+        "✨ Скидка в следующем месяце: 1%\n"
         "Покупки в этом месяце: 247,20 руб.\n"
         "До следующего уровня: 252,73 руб."
     )
@@ -44,7 +44,7 @@ def test_format_status_projects_next_month_discount_at_tier_boundaries(
 
     projected_line = format_status(status).splitlines()[1]
 
-    assert projected_line == f"Прогноз скидки на следующий месяц: {expected_discount}"
+    assert projected_line == f"✨ Скидка в следующем месяце: {expected_discount}"
 
 
 def test_format_status_omits_next_level_at_highest_tier() -> None:
@@ -56,7 +56,22 @@ def test_format_status_omits_next_level_at_highest_tier() -> None:
     )
 
     assert format_status(status) == (
-        "Ваша текущая скидка: 5%\n"
-        "Прогноз скидки на следующий месяц: 5%\n"
+        "🏷 Текущая скидка: 5%\n"
+        "✨ Скидка в следующем месяце: 5%\n"
+        "Покупки в этом месяце: 1 022,00 руб."
+    )
+
+
+def test_format_status_bolds_discount_lines_for_telegram() -> None:
+    status = CabinetStatus(
+        discount_percent=Decimal("5"),
+        monthly_purchases=Decimal("1022"),
+        until_next_level=Decimal("0"),
+        fetched_at=datetime.now(UTC),
+    )
+
+    assert format_status(status, telegram_html=True) == (
+        "<b>🏷 Текущая скидка: 5%</b>\n"
+        "<b>✨ Скидка в следующем месяце: 5%</b>\n"
         "Покупки в этом месяце: 1 022,00 руб."
     )
