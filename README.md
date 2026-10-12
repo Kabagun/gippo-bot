@@ -115,6 +115,18 @@ or `expired`; `DELETE` clears it. The service controls the phone/source
 association for each consumer. No phone ownership is taken from a public
 Telegram user.
 
+Register the bot on the common server as the `apps` user:
+
+```bash
+sms-forwarder-client register --name gippo-bot --owner kabaye --sender GIPPO
+```
+
+The phone's live webhook is `https://sms.kabagun.top/gippo-bot/<device-token>`;
+the test webhook appends `/test`. Use the exact URLs returned by registration.
+The service routes each link only to its named application. Send a JSON POST
+with `text` and the exact SMS `sender`; test delivery does not complete a login.
+Keep the consumer token in `SMS_FORWARDER_TOKEN_FILE` and keep phone links private.
+
 ## Tests
 
 ```bash
@@ -131,7 +143,7 @@ is `/srv/bots/gippo-bot/venv`, and secrets live in the owner-readable
 
 ```bash
 mkdir -p /srv/bots/gippo-bot
-git clone https://github.com/Kabaye/gippo-bot.git /srv/bots/gippo-bot/app
+git clone https://github.com/Kabagun/gippo-bot.git /srv/bots/gippo-bot/app
 python3 -m venv /srv/bots/gippo-bot/venv
 /srv/bots/gippo-bot/venv/bin/python -m pip install /srv/bots/gippo-bot/app
 chmod 600 /srv/bots/gippo-bot/.env
