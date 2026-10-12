@@ -21,8 +21,17 @@ message; card images are not sent again. Every button from an earlier menu asks
 the user to call `/start` and cannot access its old action.
 
 The running bot keeps one shared authenticated GIPPO HTTP session for all
-Telegram users. It reuses the same session cookies between status requests and
-automatically signs in again once if the cabinet session expires.
+Telegram users. It saves its cookies in a protected file and checks the saved
+session before requesting another SMS. The default login uses the new GIPPO
+phone/SMS flow. A consumer-scoped forwarding service supplies the code
+automatically; while the code is pending, **Обновить** polls the existing
+challenge once. A request does not wait several minutes for an SMS.
+
+The optional owner can confirm an existing challenge in a private chat with
+`/gippo_sms 1234`. This command is hidden from the public command menu and is
+rejected for every other user and for group chats. Its message is deleted when
+Telegram allows it. Normal users cannot supply or change the shared account's
+authentication code.
 
 ## Local setup
 
@@ -43,7 +52,10 @@ gippo-bot
 ```
 
 `gippo-check` verifies the cabinet integration without requiring a Telegram bot
-token. Do not commit `.env`; it contains both the cabinet password and bot token.
+token. The first run can start an SMS login; later runs poll the same challenge.
+`gippo-check --sms-code` prompts privately for a pending challenge's code.
+Do not pass codes as shell arguments. Do not commit `.env`, session files,
+tokens or card images.
 
 ## Configuration
 
@@ -52,8 +64,18 @@ token. Do not commit `.env`; it contains both the cabinet password and bot token
 | `TELEGRAM_BOT_TOKEN` | bot only | Token issued by BotFather |
 | `TELEGRAM_OPEN_ACCESS` | no | Set to `true` to allow every Telegram user; defaults to `false` |
 | `TELEGRAM_ALLOWED_USER_IDS` | restricted mode | Comma-separated Telegram numeric user IDs |
-| `GIPPO_LOGIN` | yes | GIPPO cabinet login/phone |
-| `GIPPO_PASSWORD` | yes | GIPPO cabinet password |
+| `TELEGRAM_OWNER_USER_ID` | manual fallback | Owner's numeric Telegram ID; only private chats may confirm SMS |
+| `GIPPO_AUTH_MODE` | no | `sms` (default), or optional legacy `password` mode |
+| `GIPPO_PHONE` | SMS mode | Shared account phone beginning with `+375` |
+| `GIPPO_SESSION_PATH` | SMS mode | Private persistent cookie/challenge file |
+| `SMS_FORWARDER_URL` | no | Defaults to `http://127.0.0.1:18090`; use HTTPS for a remote service |
+| `SMS_FORWARDER_TOKEN` | automatic SMS | Consumer-scoped service token; without it SMS mode uses manual confirmation |
+| `SMS_FORWARDER_TOKEN_FILE` | automatic SMS | Alternate owner-only file containing one consumer token; cannot be combined with inline token |
+| `GIPPO_SMS_SENDER` | no | Exact expected SMS sender, defaults to `GIPPO` |
+| `GIPPO_SMS_TTL_SECONDS` | no | Challenge validity, 60–300 seconds; default 300 |
+| `GIPPO_SMS_COOLDOWN_SECONDS` | no | Minimum SMS interval, at least 900 seconds; default 900 |
+| `GIPPO_LOGIN` | password mode | Legacy cabinet login |
+| `GIPPO_PASSWORD` | password mode | Legacy cabinet password |
 | `GIPPO_BASE_URL` | no | Defaults to `https://cabinet.gippo.by` |
 | `GIPPO_TIMEOUT_SECONDS` | no | Request timeout, defaults to 20 seconds |
 | `GIPPO_CARD_IMAGE_PATH` | no | GIPPO card PNG; defaults to `/srv/bots/gippo-bot/private/cards/gippo.png` |
@@ -66,6 +88,32 @@ cabinet values. Failed HTTP responses, page bodies, and Bot API request URLs are
 not logged, avoiding accidental disclosure of cabinet data or the bot token.
 Card images contain account-linked barcodes and must be kept outside the public
 repository in owner-readable files.
+
+On Linux the session directory must belong to the service
+user and have mode `0700`; its files use mode `0600`. The Windows operator
+must restrict the equivalent directory's ACL to the service owner. State is
+written atomically. A process lock and a shared thread lock prevent concurrent
+requests from sending duplicate SMS. Damaged, mismatched, or insecure state
+files fail closed instead of starting a new login.
+
+The forwarding token can live in a separate `0600` file beneath the `0700`
+private directory; configure `SMS_FORWARDER_TOKEN_FILE` to avoid copying it
+into a process argument or shell history. Only one token source may be set.
+
+The client creates its forwarding challenge before GIPPO sends the SMS.
+An unavailable receiver prevents the SMS request. Every attempted login
+reserves a cooldown before network I/O; failures increase that delay up to
+24 hours. Pending cookies, code-attempt hashes, and the delay survive a
+restart. Ambiguous network failures never trigger an immediate resend.
+At most three distinct codes can be tried for a challenge. Authentication
+requires a positive login response and a valid authenticated personal page.
+
+The forwarding contract uses Bearer authentication:
+`POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a four-digit
+`code_pattern`; `GET /internal/v1/challenges/{id}` returns `waiting`, `received`,
+or `expired`; `DELETE` clears it. The service controls the phone/source
+association for each consumer. No phone ownership is taken from a public
+Telegram user.
 
 ## Tests
 
@@ -87,6 +135,8 @@ git clone https://github.com/Kabaye/gippo-bot.git /srv/bots/gippo-bot/app
 python3 -m venv /srv/bots/gippo-bot/venv
 /srv/bots/gippo-bot/venv/bin/python -m pip install /srv/bots/gippo-bot/app
 chmod 600 /srv/bots/gippo-bot/.env
+mkdir -p /srv/bots/gippo-bot/private
+chmod 700 /srv/bots/gippo-bot/private
 mkdir -p ~/.config/systemd/user
 cp /srv/bots/gippo-bot/app/deploy/gippo-bot.service ~/.config/systemd/user/
 systemctl --user daemon-reload

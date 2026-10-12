@@ -126,7 +126,9 @@ def test_client_posts_multipart_and_reuses_session_cookie() -> None:
             assert request.method == "POST"
             assert request.headers["x-requested-with"] == "XMLHttpRequest"
             assert "multipart/form-data" in request.headers["content-type"]
-            return httpx.Response(200, headers={"set-cookie": "PHPSESSID=valid; Path=/"})
+            return httpx.Response(
+                200, json={"reload": True}, headers={"set-cookie": "PHPSESSID=valid; Path=/"}
+            )
         assert request.url.path == "/personal/"
         assert "PHPSESSID=valid" in request.headers["cookie"]
         return httpx.Response(200, text=page)
@@ -158,7 +160,9 @@ def test_client_reauthenticates_once_when_session_expires() -> None:
         if request.url.path == "/local/ajax/auth.php":
             auth_count += 1
             session = f"session{auth_count}"
-            return httpx.Response(200, headers={"set-cookie": f"PHPSESSID={session}; Path=/"})
+            return httpx.Response(
+                200, json={"reload": True}, headers={"set-cookie": f"PHPSESSID={session}; Path=/"}
+            )
 
         personal_count += 1
         if personal_count == 2:
@@ -207,7 +211,7 @@ def test_client_rejects_http_auth_failure() -> None:
 def test_client_rejects_redirected_login_page() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/local/ajax/auth.php":
-            return httpx.Response(200)
+            return httpx.Response(200, json={"reload": True})
         return httpx.Response(
             200,
             text='<input name="PROP_RQ[PASSWORD]">',
@@ -235,7 +239,9 @@ def test_client_wraps_network_errors() -> None:
 def test_client_wraps_personal_http_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/local/ajax/auth.php":
-            return httpx.Response(200, headers={"set-cookie": "PHPSESSID=valid; Path=/"})
+            return httpx.Response(
+                200, json={"reload": True}, headers={"set-cookie": "PHPSESSID=valid; Path=/"}
+            )
         return httpx.Response(500, request=request)
 
     with (
@@ -259,7 +265,9 @@ def test_client_serializes_concurrent_fetches_and_logs_in_once() -> None:
                 auth_count += 1
             auth_started.set()
             assert release_auth.wait(timeout=5)
-            return httpx.Response(200, headers={"set-cookie": "PHPSESSID=valid; Path=/"})
+            return httpx.Response(
+                200, json={"reload": True}, headers={"set-cookie": "PHPSESSID=valid; Path=/"}
+            )
         assert "PHPSESSID=valid" in request.headers["cookie"]
         return httpx.Response(200, text=page)
 

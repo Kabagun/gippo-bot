@@ -15,6 +15,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    parser.add_argument(
+        "--sms-code",
+        action="store_true",
+        help="prompt privately for the code of a pending SMS login",
+    )
     args = parser.parse_args()
 
     try:
@@ -22,10 +27,14 @@ def main() -> None:
         with GippoClient(
             settings.login,
             settings.password,
-            base_url=settings.base_url,
-            timeout_seconds=settings.timeout_seconds,
+            **settings.client_options(),
         ) as client:
-            status = client.fetch_status()
+            if args.sms_code:
+                from getpass import getpass
+
+                status = client.submit_sms_code(getpass("GIPPO SMS code: ").strip())
+            else:
+                status = client.fetch_status()
     except (SettingsError, GippoError) as exc:
         raise SystemExit(str(exc)) from exc
 

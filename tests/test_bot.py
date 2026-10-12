@@ -1,7 +1,8 @@
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from telegram.constants import ParseMode
@@ -12,17 +13,20 @@ from gippo_bot.bot import (
     REFRESH_CALLBACK,
     _configure_bot_commands,
     _is_authorized,
+    _is_owner,
+    _load_message,
     _refresh_keyboard,
     _send_card,
     _send_start_messages,
     _send_status,
     _validate_card_images,
     build_application,
+    confirm_sms,
     refresh_status,
     retire_legacy_callback,
     show_start,
 )
-from gippo_bot.cabinet import DEFAULT_BASE_URL
+from gippo_bot.cabinet import DEFAULT_BASE_URL, GippoLoginThrottled, GippoSmsRequired
 from gippo_bot.config import BotSettings, CabinetSettings, SettingsError
 
 
@@ -40,6 +44,7 @@ def _settings(
         cabinet=CabinetSettings(
             login="login",
             password="password",
+            auth_mode="password",
             base_url=DEFAULT_BASE_URL,
         ),
         gippo_card_image_path=gippo_card_image_path,
@@ -267,8 +272,77 @@ def test_application_registers_only_start_and_refresh_actions(tmp_path: Path) ->
     try:
         assert [handler.callback.__name__ for handler in application.handlers[0]] == [
             "show_start",
+            "confirm_sms",
             "refresh_status",
             "retire_legacy_callback",
         ]
     finally:
         application.bot_data["gippo_client"].close()
+
+
+@pytest.mark.parametrize(
+    ("user_id", "chat_type", "accepted"),
+    [(123, "private", True), (999, "private", False), (123, "group", False)],
+)
+def test_manual_confirmation_is_private_owner_only(user_id, chat_type, accepted) -> None:
+    settings = replace(_settings(open_access=True, allowed_user_ids=frozenset()), owner_user_id=123)
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=user_id), effective_chat=SimpleNamespace(type=chat_type)
+    )
+    assert _is_owner(update, settings) is accepted
+
+
+def test_unauthorized_user_cannot_submit_or_start_sms() -> None:
+    settings = replace(_settings(open_access=True, allowed_user_ids=frozenset()), owner_user_id=123)
+    client = Mock()
+    message = SimpleNamespace(reply_text=AsyncMock(), delete=AsyncMock())
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=999),
+        effective_chat=SimpleNamespace(type="private"),
+        effective_message=message,
+        callback_query=None,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
+        args=["1234"],
+    )
+    asyncio.run(confirm_sms(update, context))
+    client.submit_sms_code.assert_not_called()
+    client.fetch_status.assert_not_called()
+    message.delete.assert_not_awaited()
+    message.reply_text.assert_awaited_once_with("Нет доступа.")
+
+
+def test_owner_can_finish_pending_sms_without_new_sms() -> None:
+    from gippo_bot.cabinet import parse_personal_page
+
+    settings = replace(_settings(open_access=True, allowed_user_ids=frozenset()), owner_user_id=123)
+    client = Mock()
+    client.submit_sms_code.return_value = parse_personal_page(
+        "Ваша текущая скидка 1% Ваши покупки в этом месяце 247.27 "
+        "До следующего уровня осталось 252.73"
+    )
+    message = SimpleNamespace(reply_text=AsyncMock(), delete=AsyncMock())
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123),
+        effective_chat=SimpleNamespace(type="private"),
+        effective_message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
+        args=["1234"],
+    )
+    asyncio.run(confirm_sms(update, context))
+    client.submit_sms_code.assert_called_once_with("1234")
+    client.fetch_status.assert_not_called()
+    message.delete.assert_awaited_once()
+    assert "Вход в GIPPO восстановлен" in message.reply_text.await_args.args[0]
+
+
+def test_public_pending_message_does_not_expose_owner_authentication_action() -> None:
+    client = Mock()
+    client.fetch_status.side_effect = GippoSmsRequired(automatic=True, expires_at=100)
+    assert "/gippo_sms" not in asyncio.run(_load_message(client))
+    assert "/gippo_sms" in asyncio.run(_load_message(client, owner=True))
+    client.fetch_status.side_effect = GippoLoginThrottled(100)
+    assert "отложен" in asyncio.run(_load_message(client))

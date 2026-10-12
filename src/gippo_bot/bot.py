@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from contextlib import suppress
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,7 +19,13 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from .cabinet import GippoClient, GippoError
+from .cabinet import (
+    GippoAuthenticationError,
+    GippoClient,
+    GippoError,
+    GippoLoginThrottled,
+    GippoSmsRequired,
+)
 from .config import BotSettings, SettingsError
 from .formatting import format_status
 
@@ -69,9 +76,20 @@ async def _deny(update: Update) -> None:
         await update.effective_message.reply_text("Нет доступа.")
 
 
-async def _load_message(client: GippoClient) -> str:
+async def _load_message(client: GippoClient, *, owner: bool = False) -> str:
     try:
         status = await asyncio.to_thread(client.fetch_status)
+    except GippoSmsRequired as exc:
+        if owner:
+            waiting = "Ожидаю SMS для входа в GIPPO. "
+            if exc.automatic:
+                waiting += "Код будет получен автоматически. "
+            return (
+                waiting + "При необходимости отправьте /gippo_sms и четырёхзначный код в этом чате."
+            )
+        return "Восстанавливается доступ к GIPPO. Обновите данные через несколько минут."
+    except GippoLoginThrottled:
+        return "Вход в GIPPO временно отложен. Попробуйте обновить данные позже."
     except GippoError:
         LOGGER.exception("Could not load the GIPPO cabinet status")
         return "Не удалось получить данные GIPPO. Попробуйте ещё раз позже."
@@ -123,7 +141,8 @@ async def _send_status(
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     client: GippoClient = context.application.bot_data["gippo_client"]
-    message = await _load_message(client)
+    settings: BotSettings | None = context.application.bot_data.get("settings")
+    message = await _load_message(client, owner=_is_owner(update, settings))
     if update.effective_message is not None:
         await update.effective_message.reply_text(
             message,
@@ -174,7 +193,7 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except TelegramError:
         LOGGER.warning("Could not acknowledge the refresh callback", exc_info=True)
     client: GippoClient = context.application.bot_data["gippo_client"]
-    message = await _load_message(client)
+    message = await _load_message(client, owner=_is_owner(update, settings))
     try:
         await query.edit_message_text(
             message,
@@ -207,6 +226,49 @@ async def retire_legacy_callback(update: Update, context: ContextTypes.DEFAULT_T
         LOGGER.warning("Could not remove a legacy command button", exc_info=True)
 
 
+def _is_owner(update: Update, settings: BotSettings | None) -> bool:
+    user = getattr(update, "effective_user", None)
+    chat = getattr(update, "effective_chat", None)
+    return bool(
+        settings
+        and settings.owner_user_id
+        and user
+        and user.id == settings.owner_user_id
+        and chat
+        and chat.type == "private"
+    )
+
+
+async def confirm_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Accept a manual GIPPO code only from the configured owner in private."""
+
+    settings: BotSettings = context.application.bot_data["settings"]
+    if not _is_owner(update, settings):
+        await _deny(update)
+        return
+    message = update.effective_message
+    if message is None:
+        return
+    if len(context.args) != 1 or not re.fullmatch(r"[0-9]{4}", context.args[0]):
+        await message.reply_text("Отправьте /gippo_sms и четырёхзначный код из SMS.")
+        return
+    # Do not leave the short-lived credential visible in the chat history.
+    with suppress(TelegramError):
+        await message.delete()
+    client: GippoClient = context.application.bot_data["gippo_client"]
+    try:
+        status = await asyncio.to_thread(client.submit_sms_code, context.args[0])
+    except GippoLoginThrottled:
+        text = "Код больше не принимается. Следующая попытка входа будет доступна позже."
+    except GippoAuthenticationError:
+        text = "Код не принят или вход уже завершён. Проверьте код и обновите данные."
+    except GippoError:
+        text = "Не удалось подтвердить вход в GIPPO. Попробуйте обновить данные позже."
+    else:
+        text = "Вход в GIPPO восстановлен.\n\n" + format_status(status, telegram_html=True)
+    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_refresh_keyboard())
+
+
 def build_application(settings: BotSettings) -> Application:
     """Build a configured Telegram application without starting polling."""
 
@@ -215,8 +277,7 @@ def build_application(settings: BotSettings) -> Application:
     client = GippoClient(
         cabinet.login,
         cabinet.password,
-        base_url=cabinet.base_url,
-        timeout_seconds=cabinet.timeout_seconds,
+        **cabinet.client_options(),
     )
     application = (
         ApplicationBuilder()
@@ -228,6 +289,7 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["settings"] = settings
     application.bot_data["gippo_client"] = client
     application.add_handler(CommandHandler("start", show_start))
+    application.add_handler(CommandHandler("gippo_sms", confirm_sms))
     application.add_handler(CallbackQueryHandler(refresh_status, pattern=f"^{REFRESH_CALLBACK}$"))
     application.add_handler(
         CallbackQueryHandler(retire_legacy_callback, pattern=LEGACY_CALLBACK_PATTERN)
