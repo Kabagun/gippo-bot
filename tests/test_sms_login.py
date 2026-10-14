@@ -15,7 +15,6 @@ from gippo_bot.cabinet import (
     GippoPageError,
     GippoSmsRequired,
 )
-from gippo_bot.sms import CODE_PATTERN
 
 PAGE = (Path(__file__).parent / "fixtures" / "personal.html").read_text(encoding="utf-8")
 LOGIN_PAGE = '<form><input name="PROP_RQ[PHONE]"></form>'
@@ -72,7 +71,7 @@ class ForwarderServer:
         self.status = "waiting"
         self.create_status = 200
         self.poll_status = 200
-        self.code = "1234"
+        self.code = "12345"
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer consumer-token"
@@ -82,7 +81,7 @@ class ForwarderServer:
             assert json.loads(request.content) == {
                 "sender": "GIPPO",
                 "ttl_seconds": 300,
-                "code_pattern": CODE_PATTERN,
+                "code_pattern": r"(?<!\d)\d{5}(?!\d)",
             }
             return httpx.Response(
                 self.create_status,
@@ -139,7 +138,7 @@ def test_manual_login_persists_pending_cookies_and_authenticated_session(
     with client(server, path) as restarted:
         with pytest.raises(GippoSmsRequired):
             restarted.fetch_status()
-        status = restarted.submit_sms_code("1234")
+        status = restarted.submit_sms_code("12345")
         assert str(status.monthly_purchases) == "247.27"
     with client(server, path) as restarted_again:
         restarted_again.fetch_status()
@@ -148,7 +147,7 @@ def test_manual_login_persists_pending_cookies_and_authenticated_session(
     assert state["authenticated"] is True
     assert state["pending"] is None
     assert "+375291234567" not in path.read_text()
-    assert "1234" not in path.read_text()
+    assert "12345" not in path.read_text()
     if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
 
@@ -173,6 +172,27 @@ def test_automatic_challenge_precedes_sms_and_poll_returns_promptly(
         instance.fetch_status()
     assert server.sms_requests == server.code_requests == 1
     assert forwarder.calls[-1] == ("DELETE", "/internal/v1/challenges/challenge-1")
+
+
+def test_profile_phone_form_does_not_repeat_sms_after_saved_login(
+    tmp_path: Path, clock: list[float]
+) -> None:
+    server = CabinetServer()
+    server.personal_page = PAGE + '<form><input name="PROP_RQ[PHONE]"></form>'
+    path = tmp_path / "session.json"
+    forwarder = ForwarderServer(clock)
+    with client(server, path, forwarder) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        forwarder.status = "received"
+        clock[0] += 5
+        status = instance.poll_sms_login()
+        assert str(status.monthly_purchases) == "247.27"
+    with client(server, path, forwarder) as restarted:
+        status = restarted.fetch_status()
+        assert str(status.monthly_purchases) == "247.27"
+    assert server.sms_requests == server.code_requests == 1
+    assert forwarder.calls.count(("POST", "/internal/v1/challenges")) == 1
 
 
 def test_pending_forwarder_challenge_survives_restart(tmp_path: Path, clock: list[float]) -> None:
@@ -319,7 +339,7 @@ def test_code_response_must_confirm_authentication(
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
         with pytest.raises(GippoAuthenticationError):
-            instance.submit_sms_code("1234")
+            instance.submit_sms_code("12345")
     assert server.personal_requests == 0
 
 
@@ -332,7 +352,7 @@ def test_success_response_also_requires_authenticated_personal_page(
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
         with pytest.raises(GippoAuthenticationError, match="not accepted"):
-            instance.submit_sms_code("1234")
+            instance.submit_sms_code("12345")
 
 
 def test_changed_personal_page_does_not_start_more_sms(tmp_path: Path, clock: list[float]) -> None:
@@ -341,7 +361,7 @@ def test_changed_personal_page_does_not_start_more_sms(tmp_path: Path, clock: li
     with client(server, path) as instance:
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
-        instance.submit_sms_code("1234")
+        instance.submit_sms_code("12345")
         server.personal_page = "New layout with no values"
         with pytest.raises(GippoPageError):
             instance.fetch_status()
@@ -373,7 +393,7 @@ def test_expired_session_starts_new_challenge_after_cooldown(
     with client(server, path) as instance:
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
-        instance.submit_sms_code("1234")
+        instance.submit_sms_code("12345")
         server.authenticated = False
         with pytest.raises(GippoLoginThrottled):
             instance.fetch_status()
@@ -399,11 +419,11 @@ def test_only_three_distinct_codes_and_no_duplicate_auto_submission(
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
         assert server.code_requests == 1
-        for code in ("5678", "9012"):
+        for code in ("56789", "90123"):
             with pytest.raises(GippoAuthenticationError):
                 instance.submit_sms_code(code)
         with pytest.raises(GippoLoginThrottled):
-            instance.submit_sms_code("3456")
+            instance.submit_sms_code("34567")
     assert server.sms_requests == 1
     assert server.code_requests == 3
 
@@ -411,11 +431,11 @@ def test_only_three_distinct_codes_and_no_duplicate_auto_submission(
 def test_invalid_code_never_sends_sms(tmp_path: Path) -> None:
     server = CabinetServer()
     with client(server, tmp_path / "session.json") as instance:
-        for code in ("123", "12345", "١٢٣٤"):
+        for code in ("1234", "123456", "١٢٣٤٥"):
             with pytest.raises(GippoAuthenticationError):
                 instance.submit_sms_code(code)
         with pytest.raises(GippoAuthenticationError, match="no pending"):
-            instance.submit_sms_code("1234")
+            instance.submit_sms_code("12345")
     assert server.sms_requests == server.code_requests == 0
 
 
@@ -476,5 +496,5 @@ def test_forwarder_poll_failure_preserves_manual_confirmation(
         forwarder.poll_status = 503
         with pytest.raises(GippoSmsRequired):
             instance.fetch_status()
-        instance.submit_sms_code("1234")
+        instance.submit_sms_code("12345")
     assert server.sms_requests == server.code_requests == 1

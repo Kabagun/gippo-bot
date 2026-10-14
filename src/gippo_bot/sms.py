@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
-CODE_PATTERN = r"(?<!\d)\d{4}(?!\d)"
+CODE_PATTERN = r"(?<!\d)\d{5}(?!\d)"
 
 
 class SmsServiceError(RuntimeError):
@@ -99,7 +99,7 @@ class SmsForwarderClient:
                 raise ValueError
             code = payload.get("code")
             if status == "received" and (
-                not isinstance(code, str) or not re.fullmatch(r"[0-9]{4}", code)
+                not isinstance(code, str) or not re.fullmatch(r"[0-9]{5}", code)
             ):
                 raise ValueError
             if status != "received" and code is not None:

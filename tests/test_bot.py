@@ -309,7 +309,7 @@ def test_unauthorized_user_cannot_submit_or_start_sms() -> None:
     )
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
-        args=["1234"],
+        args=["12345"],
     )
     asyncio.run(confirm_sms(update, context))
     client.submit_sms_code.assert_not_called()
@@ -335,10 +335,10 @@ def test_owner_can_finish_pending_sms_without_new_sms() -> None:
     )
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
-        args=["1234"],
+        args=["12345"],
     )
     asyncio.run(confirm_sms(update, context))
-    client.submit_sms_code.assert_called_once_with("1234")
+    client.submit_sms_code.assert_called_once_with("12345")
     client.fetch_status.assert_not_called()
     message.delete.assert_awaited_once()
     assert "Вход в GIPPO восстановлен" in message.reply_text.await_args.args[0]

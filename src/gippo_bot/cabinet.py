@@ -217,8 +217,8 @@ class GippoClient:
         method. A challenge permits at most three distinct code submissions.
         """
 
-        if not re.fullmatch(r"[0-9]{4}", code):
-            raise GippoAuthenticationError("The SMS code must contain exactly four digits")
+        if not re.fullmatch(r"[0-9]{5}", code):
+            raise GippoAuthenticationError("The SMS code must contain exactly five digits")
         return self._operate(lambda: self._submit_code(code))
 
     def poll_sms_login(self) -> CabinetStatus:
@@ -471,20 +471,28 @@ class GippoClient:
 
     def _is_login_response(self, response: httpx.Response) -> bool:
         expected = httpx.URL(self._base_url)
-        return (
+        if (
             response.status_code in {401, 403}
             or (response.url.scheme, response.url.host, response.url.port)
             != (expected.scheme, expected.host, expected.port)
             or response.url.path.rstrip("/") != "/personal"
-            or bool(
-                re.search(
-                    r"(?:PROP_RQ\[(?:PASSWORD|PHONE)\]|PROP\[SMS_CODE\]|"
-                    r"name\s*=\s*['\"]password['\"])",
-                    response.text,
-                    re.IGNORECASE,
-                )
-            )
-        )
+        ):
+            return True
+        if not re.search(
+            r"(?:PROP_RQ\[(?:PASSWORD|PHONE)\]|PROP\[SMS_CODE\]|"
+            r"name\s*=\s*['\"]password['\"])",
+            response.text,
+            re.IGNORECASE,
+        ):
+            return False
+        # The authenticated profile also contains a phone editor. Complete
+        # loyalty values on the expected personal page distinguish it from
+        # the phone-only login form without rejecting the saved session.
+        try:
+            parse_personal_page(response.text)
+        except GippoPageError:
+            return True
+        return False
 
     def _save(self) -> None:
         if self._store:

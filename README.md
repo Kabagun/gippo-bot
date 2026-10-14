@@ -28,15 +28,16 @@ starts SMS login. A single background monitor polls that existing challenge ever
 messages in place, so users do not need a second refresh and the bot does not send
 duplicate cards or status messages. A request does not wait several minutes for
 an SMS.
+An authenticated loyalty page may also include the profile phone editor.
 
 When a challenge expires, the monitor stops without automatically requesting
 another SMS. The existing provider cooldown and challenge TTL remain in effect.
 
 The optional owner can confirm an existing challenge in a private chat with
-`/gippo_sms 1234`. This command is hidden from the public command menu and is
-rejected for every other user and for group chats. Its message is deleted when
-Telegram allows it. Normal users cannot supply or change the shared account's
-authentication code.
+`/gippo_sms 12345`. The code must contain exactly five ASCII digits. This command
+is hidden from the public command menu and rejected for every other user and for
+group chats. Its message is deleted when Telegram allows it. Normal users cannot
+supply or change the shared account's authentication code.
 
 ## Local setup
 
@@ -115,11 +116,11 @@ At most three distinct codes can be tried for a challenge. Authentication
 requires a positive login response and a valid authenticated personal page.
 
 The forwarding contract uses Bearer authentication:
-`POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a four-digit
-`code_pattern`; `GET /internal/v1/challenges/{id}` returns `waiting`, `received`,
-or `expired`; `DELETE` clears it. The service controls the phone/source
-association for each consumer. No phone ownership is taken from a public
-Telegram user.
+`POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a `code_pattern`
+that matches exactly five ASCII digits; `GET /internal/v1/challenges/{id}` returns
+`waiting`, `received`, or `expired`; `DELETE` clears it. The service controls the
+phone/source association for each consumer. No phone ownership is taken from a
+public Telegram user.
 
 Register the bot on the common server as the `apps` user. The internal consumer
 name stays `gippo-bot`; its public phone service alias is `gippo`:

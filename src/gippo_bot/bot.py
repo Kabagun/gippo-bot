@@ -106,7 +106,7 @@ async def _load_message(
                 waiting += "Код будет получен автоматически. "
             return _StatusMessage(
                 waiting + "При необходимости отправьте /gippo_sms "
-                "и четырёхзначный код в этом чате.",
+                "и пятизначный код в этом чате.",
                 exc,
             )
         if exc.automatic:
@@ -349,8 +349,8 @@ async def confirm_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
     if message is None:
         return
-    if len(context.args) != 1 or not re.fullmatch(r"[0-9]{4}", context.args[0]):
-        await message.reply_text("Отправьте /gippo_sms и четырёхзначный код из SMS.")
+    if len(context.args) != 1 or not re.fullmatch(r"[0-9]{5}", context.args[0]):
+        await message.reply_text("Отправьте /gippo_sms и пятизначный код из SMS.")
         return
     # Do not leave the short-lived credential visible in the chat history.
     with suppress(TelegramError):
