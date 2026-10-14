@@ -221,6 +221,16 @@ class GippoClient:
             raise GippoAuthenticationError("The SMS code must contain exactly four digits")
         return self._operate(lambda: self._submit_code(code))
 
+    def poll_sms_login(self) -> CabinetStatus:
+        """Finish an existing SMS login without ever requesting another SMS.
+
+        A recovered authenticated session is also accepted. The same persistent
+        locks, challenge deadline, and code-attempt limits apply as for a status
+        request, including when another process completed or cleared the login.
+        """
+
+        return self._operate(lambda: self._fetch_status(allow_login=False))
+
     def close(self) -> None:
         """Close connection pools idempotently and prohibit further requests."""
 
@@ -261,7 +271,7 @@ class GippoClient:
             except httpx.HTTPError as exc:
                 raise GippoError("Could not communicate with the GIPPO cabinet") from exc
 
-    def _fetch_status(self) -> CabinetStatus:
+    def _fetch_status(self, *, allow_login: bool = True) -> CabinetStatus:
         # Pending cookies can already have been authenticated before a crash.
         if self._authenticated or self._client.cookies:
             response = self._get_personal()
@@ -273,6 +283,8 @@ class GippoClient:
 
         if self._pending:
             return self._poll_pending()
+        if not allow_login:
+            raise GippoAuthenticationError("There is no pending GIPPO SMS challenge")
         if time.time() < self._next_login_at:
             raise GippoLoginThrottled(self._next_login_at)
         if self._auth_mode == "sms":

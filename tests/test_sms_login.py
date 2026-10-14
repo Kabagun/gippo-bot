@@ -188,6 +188,61 @@ def test_pending_forwarder_challenge_survives_restart(tmp_path: Path, clock: lis
     assert server.sms_requests == server.code_requests == 1
 
 
+def test_background_poll_never_starts_a_login_without_pending_state(
+    tmp_path: Path, clock: list[float]
+) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    with (
+        client(server, tmp_path / "session.json", forwarder) as instance,
+        pytest.raises(GippoAuthenticationError, match="no pending"),
+    ):
+        instance.poll_sms_login()
+    assert server.sms_requests == server.code_requests == 0
+    assert forwarder.calls == []
+
+
+def test_background_poll_completes_existing_login_and_never_resends_after_expiry(
+    tmp_path: Path, clock: list[float]
+) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    path = tmp_path / "session.json"
+    with client(server, path, forwarder) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        with pytest.raises(GippoSmsRequired):
+            instance.poll_sms_login()
+        forwarder.status = "received"
+        clock[0] += 5
+        status = instance.poll_sms_login()
+        assert str(status.monthly_purchases) == "247.27"
+        # Another caller may log out after successful confirmation and after
+        # the cooldown; the background path must still never send a new SMS.
+        server.authenticated = False
+        clock[0] += 900
+        with pytest.raises(GippoAuthenticationError, match="no pending"):
+            instance.poll_sms_login()
+    assert server.sms_requests == server.code_requests == 1
+
+
+def test_background_poll_discards_expired_challenge_without_new_sms(
+    tmp_path: Path, clock: list[float]
+) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    with client(server, tmp_path / "session.json", forwarder) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        clock[0] += 1800
+        with pytest.raises(GippoLoginThrottled):
+            instance.poll_sms_login()
+        with pytest.raises(GippoAuthenticationError, match="no pending"):
+            instance.poll_sms_login()
+    assert server.sms_requests == 1
+    assert server.code_requests == 0
+
+
 @pytest.mark.parametrize("create_status", [401, 409, 429, 503])
 def test_unavailable_receiver_suppresses_sms_and_persists_backoff(
     tmp_path: Path, clock: list[float], create_status: int

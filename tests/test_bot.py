@@ -19,6 +19,7 @@ from gippo_bot.bot import (
     _send_card,
     _send_start_messages,
     _send_status,
+    _StatusMessage,
     _validate_card_images,
     build_application,
     confirm_sms,
@@ -123,7 +124,9 @@ def test_refresh_updates_only_existing_status_message(
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
     )
-    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="new status"))
+    monkeypatch.setattr(
+        "gippo_bot.bot._load_message", AsyncMock(return_value=_StatusMessage("new status"))
+    )
     send_card = AsyncMock()
     monkeypatch.setattr("gippo_bot.bot._send_card", send_card)
 
@@ -144,7 +147,7 @@ def test_status_message_uses_html_formatting(monkeypatch: pytest.MonkeyPatch) ->
     context = SimpleNamespace(application=SimpleNamespace(bot_data={"gippo_client": object()}))
     monkeypatch.setattr(
         "gippo_bot.bot._load_message",
-        AsyncMock(return_value="<b>status</b>"),
+        AsyncMock(return_value=_StatusMessage("<b>status</b>")),
     )
 
     asyncio.run(_send_status(update, context, reply_markup=_refresh_keyboard()))
@@ -169,7 +172,9 @@ def test_unchanged_refresh_status_does_not_fail(monkeypatch: pytest.MonkeyPatch)
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
     )
-    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="same status"))
+    monkeypatch.setattr(
+        "gippo_bot.bot._load_message", AsyncMock(return_value=_StatusMessage("same status"))
+    )
 
     asyncio.run(refresh_status(update, context))
 
@@ -342,7 +347,10 @@ def test_owner_can_finish_pending_sms_without_new_sms() -> None:
 def test_public_pending_message_does_not_expose_owner_authentication_action() -> None:
     client = Mock()
     client.fetch_status.side_effect = GippoSmsRequired(automatic=True, expires_at=100)
-    assert "/gippo_sms" not in asyncio.run(_load_message(client))
-    assert "/gippo_sms" in asyncio.run(_load_message(client, owner=True))
+    result = asyncio.run(_load_message(client))
+    assert "/gippo_sms" not in result.text
+    assert "автоматически" in result.text
+    assert result.pending.automatic
+    assert "/gippo_sms" in asyncio.run(_load_message(client, owner=True)).text
     client.fetch_status.side_effect = GippoLoginThrottled(100)
-    assert "отложен" in asyncio.run(_load_message(client))
+    assert "отложен" in asyncio.run(_load_message(client)).text

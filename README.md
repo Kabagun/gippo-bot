@@ -21,11 +21,16 @@ message; card images are not sent again. Every button from an earlier menu asks
 the user to call `/start` and cannot access its old action.
 
 The running bot keeps one shared authenticated GIPPO HTTP session for all
-Telegram users. It saves its cookies in a protected file and checks the saved
-session before requesting another SMS. The default login uses the new GIPPO
-phone/SMS flow. A consumer-scoped forwarding service supplies the code
-automatically; while the code is pending, **Обновить** polls the existing
-challenge once. A request does not wait several minutes for an SMS.
+Telegram users. It saves its cookies in a protected file and checks that session
+before requesting cabinet status. If no valid session exists, the status request
+starts SMS login. A single background monitor polls that existing challenge every
+5 seconds and completes login when the code arrives. It edits waiting status
+messages in place, so users do not need a second refresh and the bot does not send
+duplicate cards or status messages. A request does not wait several minutes for
+an SMS.
+
+When a challenge expires, the monitor stops without automatically requesting
+another SMS. The existing provider cooldown and challenge TTL remain in effect.
 
 The optional owner can confirm an existing challenge in a private chat with
 `/gippo_sms 1234`. This command is hidden from the public command menu and is
@@ -52,7 +57,7 @@ gippo-bot
 ```
 
 `gippo-check` verifies the cabinet integration without requiring a Telegram bot
-token. The first run can start an SMS login; later runs poll the same challenge.
+token. A check without a valid session can start or resume an SMS login.
 `gippo-check --sms-code` prompts privately for a pending challenge's code.
 Do not pass codes as shell arguments. Do not commit `.env`, session files,
 tokens or card images.
@@ -104,7 +109,8 @@ The client creates its forwarding challenge before GIPPO sends the SMS.
 An unavailable receiver prevents the SMS request. Every attempted login
 reserves a cooldown before network I/O; failures increase that delay up to
 24 hours. Pending cookies, code-attempt hashes, and the delay survive a
-restart. Ambiguous network failures never trigger an immediate resend.
+restart. Ambiguous network failures never trigger an immediate resend. The
+background monitor never resends automatically when its challenge expires.
 At most three distinct codes can be tried for a challenge. Authentication
 requires a positive login response and a valid authenticated personal page.
 
@@ -115,17 +121,46 @@ or `expired`; `DELETE` clears it. The service controls the phone/source
 association for each consumer. No phone ownership is taken from a public
 Telegram user.
 
-Register the bot on the common server as the `apps` user:
+Register the bot on the common server as the `apps` user. The internal consumer
+name stays `gippo-bot`; its public phone service alias is `gippo`:
 
 ```bash
-sms-forwarder-client register --name gippo-bot --owner kabaye --sender GIPPO
+sms-forwarder-client register --name gippo-bot --owner kabaye --service gippo --sender GIPPO
 ```
 
-The phone's live webhook is `https://sms.kabagun.top/gippo-bot/<device-token>`;
-the test webhook appends `/test`. Use the exact URLs returned by registration.
-The service routes each link only to its named application. Send a JSON POST
-with `text` and the exact SMS `sender`; test delivery does not complete a login.
-Keep the consumer token in `SMS_FORWARDER_TOKEN_FILE` and keep phone links private.
+The shared phone contract uses one owner URL returned by registration:
+`POST /v1/sms/<device-token>`. The test URL uses the same path with `/test`
+appended. These URLs are shared by the services registered for that phone owner.
+
+This contract requires SMS Forwarder 0.3.0. Update the gateway before switching
+the phone to common ingress. After the gateway update, change an existing
+consumer's public alias with the administrator command:
+
+```bash
+sms-forwarder-client set-service --name gippo-bot --service gippo
+```
+
+Re-registering `gippo-bot` with a different `--service` returns a conflict; it
+does not rename the alias. The administrator command preserves consumer
+credentials and active challenges.
+
+The phone sends JSON to the live URL:
+
+```json
+{"service":"gippo","text":"<incoming SMS>"}
+```
+
+When `gippo` has only one registered sender, `sender` may be omitted. If included,
+it must match the registered sender exactly. Sender-only routing is allowed only
+when one service for that owner matches. The test URL validates routing but never
+completes a login.
+
+SMS Forwarder stores unambiguous codes from allowed senders encrypted in its
+database for up to 24 hours. This history does not extend the bot's challenge TTL
+or supply a code to a later authentication attempt.
+
+Keep the consumer token in `SMS_FORWARDER_TOKEN_FILE` and keep the returned phone
+links private.
 
 ## Tests
 
