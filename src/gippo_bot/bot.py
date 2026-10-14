@@ -119,6 +119,7 @@ async def _load_message(
             "Восстанавливается доступ к GIPPO. Обновите данные через несколько минут.", exc
         )
     except GippoLoginThrottled:
+        LOGGER.info("GIPPO status refresh deferred by the login cooldown")
         return _StatusMessage("Вход в GIPPO временно отложен. Попробуйте обновить данные позже.")
     except GippoError:
         LOGGER.exception("Could not load the GIPPO cabinet status")
@@ -126,6 +127,7 @@ async def _load_message(
     except Exception:
         LOGGER.exception("Unexpected error while loading the GIPPO cabinet status")
         return _StatusMessage("Временная ошибка. Попробуйте ещё раз позже.")
+    LOGGER.info("GIPPO cabinet status loaded for Telegram")
     return _StatusMessage(format_status(status, telegram_html=True))
 
 

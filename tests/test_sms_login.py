@@ -289,6 +289,61 @@ def test_unavailable_receiver_suppresses_sms_and_persists_backoff(
     assert len(forwarder.calls) == 2
 
 
+def test_successful_sms_login_caps_long_backoff_at_base_cooldown(
+    tmp_path: Path, clock: list[float]
+) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    forwarder.create_status = 503
+    path = tmp_path / "session.json"
+    with client(server, path, forwarder) as instance:
+        for attempt in range(7):
+            with pytest.raises(GippoAuthenticationError, match="no SMS was sent"):
+                instance.fetch_status()
+            state = json.loads(path.read_text(encoding="utf-8"))
+            assert state["failures"] == attempt + 1
+            if attempt < 6:
+                clock[0] = state["next_login_at"]
+
+        long_retry_at = state["next_login_at"]
+        assert long_retry_at == clock[0] + 16 * 60 * 60
+
+        clock[0] = long_retry_at
+        forwarder.create_status = 200
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        assert server.sms_requests == 1
+
+        forwarder.status = "received"
+        clock[0] += 5
+        status = instance.fetch_status()
+        assert str(status.monthly_purchases) == "247.27"
+        success_at = clock[0]
+
+        state = json.loads(path.read_text(encoding="utf-8"))
+        assert state["failures"] == 0
+        assert state["next_login_at"] <= success_at + 900
+
+        retry_at = state["next_login_at"]
+        clock[0] += 60
+        instance.fetch_status()
+        assert json.loads(path.read_text(encoding="utf-8"))["next_login_at"] == retry_at
+
+        # The provider session expires immediately, but its base SMS cooldown
+        # still applies until the next login attempt is allowed.
+        server.authenticated = False
+        with pytest.raises(GippoLoginThrottled) as throttled:
+            instance.fetch_status()
+        assert throttled.value.retry_at == success_at + 900
+
+        # Once the base cooldown passes, the expired session can request one
+        # new SMS instead of retaining the previous long backoff.
+        clock[0] = success_at + 900
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        assert server.sms_requests == 2
+
+
 def test_sms_send_timeout_never_resends_after_restart(tmp_path: Path, clock: list[float]) -> None:
     server = CabinetServer()
     server.timeout_on_sms = True

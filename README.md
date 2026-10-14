@@ -112,8 +112,14 @@ reserves a cooldown before network I/O; failures increase that delay up to
 24 hours. Pending cookies, code-attempt hashes, and the delay survive a
 restart. Ambiguous network failures never trigger an immediate resend. The
 background monitor never resends automatically when its challenge expires.
+Successful authentication clears the accumulated failure backoff and retains
+at most the configured base SMS cooldown (15 minutes by default). Successful
+status refreshes do not extend that deadline. If the saved session is rejected
+after the cooldown, the next status request starts a new SMS login.
 At most three distinct codes can be tried for a challenge. Authentication
 requires a positive login response and a valid authenticated personal page.
+Runtime logs record session rejection, confirmed authentication, and whether a
+Telegram status refresh succeeded or was deferred, without codes or cookies.
 
 The forwarding contract uses Bearer authentication:
 `POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a `code_pattern`

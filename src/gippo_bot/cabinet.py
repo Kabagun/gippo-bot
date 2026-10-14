@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 import threading
@@ -22,6 +23,7 @@ from .session import ProtectedSessionStore, SessionStorageError
 from .sms import SmsForwarderClient, SmsServiceError
 
 DEFAULT_BASE_URL = "https://cabinet.gippo.by"
+LOGGER = logging.getLogger(__name__)
 
 
 class GippoError(RuntimeError):
@@ -277,6 +279,10 @@ class GippoClient:
             response = self._get_personal()
             if not self._is_login_response(response):
                 return self._accept_personal(response)
+            if self._authenticated:
+                LOGGER.warning(
+                    "GIPPO no longer accepts the saved session (HTTP %s)", response.status_code
+                )
             self._authenticated = False
             if not self._pending:
                 self._client.cookies.clear()
@@ -407,12 +413,18 @@ class GippoClient:
 
     def _accept_personal(self, response: httpx.Response) -> CabinetStatus:
         status = parse_personal_page(response.text)
+        was_authenticated = self._authenticated
         self._authenticated = True
         self._failures = 0
         self._discard_pending()
         if self._auth_mode == "password":
             self._next_login_at = 0.0
-        # Preserve the SMS cooldown even after success and immediate logout.
+        else:
+            # Success ends the failure backoff. Retain only the base SMS
+            # cooldown, and never extend it on subsequent status refreshes.
+            self._next_login_at = min(self._next_login_at, time.time() + self._sms_cooldown)
+        if not was_authenticated:
+            LOGGER.info("GIPPO cabinet session authenticated")
         return status
 
     def _discard_pending(self) -> None:
