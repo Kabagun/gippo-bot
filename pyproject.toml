@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gippo-bot"
-version = "0.3.2"
+version = "0.4.0"
 description = "Telegram bot for checking a GIPPO loyalty cabinet"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,6 +14,7 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "httpx>=0.27,<1",
   "python-telegram-bot>=22.6,<23",
+  "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,7 @@ dev = [
 [project.scripts]
 gippo-bot = "gippo_bot.bot:main"
 gippo-check = "gippo_bot.cli:main"
+gippo-cache-refresh = "gippo_bot.refresh:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gippo_bot"]

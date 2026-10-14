@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from gippo_bot.cabinet import CabinetStatus
-from gippo_bot.formatting import format_status
+from gippo_bot.formatting import format_cached_status, format_empty_cache, format_status
 
 
 def test_format_status_uses_russian_decimal_notation() -> None:
@@ -75,3 +75,32 @@ def test_format_status_bolds_discount_lines_for_telegram() -> None:
         "<b>✨ Скидка в следующем месяце: 5%</b>\n"
         "Покупки в этом месяце: 1 022,00 руб."
     )
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (datetime(2026, 10, 14, 20, 0, tzinfo=UTC), "сегодня в 22:02"),
+        (datetime(2026, 10, 14, 21, 30, tzinfo=UTC), "вчера в 22:02"),
+        (datetime(2026, 10, 16, 12, 0, tzinfo=UTC), "14.10.2026 в 22:02"),
+    ],
+)
+def test_cached_status_displays_actual_receipt_today_yesterday_or_date_in_minsk(
+    current, expected
+) -> None:
+    status = CabinetStatus(
+        Decimal("1"),
+        Decimal("247.27"),
+        Decimal("252.73"),
+        datetime(2026, 10, 14, 19, 2, tzinfo=UTC),
+    )
+    assert format_cached_status(status, now=current).endswith(
+        f"🕒 Данные получены {expected} (Минск)"
+    )
+    assert "<b>" in format_cached_status(status, telegram_html=True, now=current)
+
+
+def test_empty_cache_shows_next_future_slot_after_minsk_midnight() -> None:
+    text = format_empty_cache(now=datetime(2026, 10, 14, 21, 30, tzinfo=UTC))
+    assert "15.10.2026 в 08:00 (Минск)" in text
+    assert "08:00 и 22:00" in text

@@ -165,3 +165,12 @@ def test_manual_sms_bot_requires_explicit_owner(monkeypatch, tmp_path) -> None:
         BotSettings.from_environment()
     monkeypatch.setenv("TELEGRAM_OWNER_USER_ID", "123")
     assert BotSettings.from_environment().owner_user_id == 123
+
+
+def test_cache_path_can_be_configured_without_creating_provider(monkeypatch, tmp_path) -> None:
+    sms_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("GIPPO_CACHE_PATH", str(tmp_path / "status.json"))
+    configured = CabinetSettings.from_environment()
+    assert configured.cache_path == tmp_path / "status.json"
+    assert configured.status_cache().read_status() is None
+    assert not configured.cache_path.exists()

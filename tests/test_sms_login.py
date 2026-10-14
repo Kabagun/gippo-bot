@@ -246,6 +246,101 @@ def test_background_poll_completes_existing_login_and_never_resends_after_expiry
     assert server.sms_requests == server.code_requests == 1
 
 
+def test_waiting_sms_polls_only_local_forwarder_until_code_arrives(tmp_path, clock) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    with client(server, tmp_path / "session.json", forwarder) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        for _ in range(10):
+            clock[0] += 5
+            with pytest.raises(GippoSmsRequired):
+                instance.poll_sms_login()
+        assert server.personal_requests == server.code_requests == 0
+        assert server.sms_requests == 1
+        forwarder.status = "received"
+        clock[0] += 5
+        instance.poll_sms_login()
+    assert server.personal_requests == server.code_requests == server.sms_requests == 1
+
+
+def test_definitely_rejected_manual_code_does_not_poll_cabinet_page(tmp_path, clock) -> None:
+    server = CabinetServer()
+    server.step2_payload = {"err": ["PROP[SMS_CODE]"]}
+    forwarder = ForwarderServer(clock)
+    path = tmp_path / "session.json"
+    with client(server, path, forwarder) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        with pytest.raises(GippoAuthenticationError):
+            instance.submit_sms_code("12345")
+    with client(server, path, forwarder) as restarted:
+        for _ in range(10):
+            clock[0] += 5
+            with pytest.raises(GippoSmsRequired):
+                restarted.poll_sms_login()
+    assert server.personal_requests == 0
+    assert server.code_requests == server.sms_requests == 1
+
+
+def test_uncertain_submitted_code_recovers_authenticated_session(tmp_path, clock) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    path = tmp_path / "session.json"
+    with client(server, path, forwarder) as instance, pytest.raises(GippoSmsRequired):
+        instance.fetch_status()
+    # A process stopped after sending a code but before receiving confirmation.
+    state = json.loads(path.read_text())
+    state["pending"]["verify_pending"] = True
+    path.write_text(json.dumps(state))
+    server.authenticated = True
+    with client(server, path, forwarder) as restarted:
+        restarted.poll_sms_login()
+    assert server.personal_requests == server.sms_requests == 1
+    assert server.code_requests == 0
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unknown_response"])
+def test_uncertain_code_response_keeps_verification_needed_across_restart(
+    tmp_path, clock, failure
+) -> None:
+    server = CabinetServer()
+    path = tmp_path / "session.json"
+
+    def handler(request):
+        response = server(request)
+        if 'name="PROP[SMS_CODE]"' in request.content.decode():
+            if failure == "timeout":
+                raise httpx.ReadTimeout("response lost after acceptance", request=request)
+            return httpx.Response(200, text="unrecognized success response")
+        return response
+
+    with GippoClient(
+        "+375291234567", auth_mode="sms", session_path=path, transport=httpx.MockTransport(handler)
+    ) as instance:
+        with pytest.raises(GippoSmsRequired):
+            instance.fetch_status()
+        with pytest.raises(GippoError):
+            instance.submit_sms_code("12345")
+    assert json.loads(path.read_text())["pending"]["verify_pending"] is True
+    with client(server, path) as restarted:
+        restarted.poll_sms_login()
+    assert server.personal_requests == server.code_requests == server.sms_requests == 1
+
+
+def test_next_scheduled_fetch_discards_old_expired_challenge(tmp_path, clock) -> None:
+    server = CabinetServer()
+    forwarder = ForwarderServer(clock)
+    path = tmp_path / "session.json"
+    with client(server, path, forwarder) as morning, pytest.raises(GippoSmsRequired):
+        morning.fetch_status()
+    clock[0] += 14 * 3600
+    with client(server, path, forwarder) as evening, pytest.raises(GippoSmsRequired):
+        evening.fetch_status()
+    assert server.sms_requests == 2
+    assert forwarder.calls.count(("POST", "/internal/v1/challenges")) == 2
+
+
 def test_background_poll_discards_expired_challenge_without_new_sms(
     tmp_path: Path, clock: list[float]
 ) -> None:

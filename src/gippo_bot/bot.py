@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
@@ -23,13 +21,12 @@ from telegram.ext import (
 
 from .cabinet import (
     GippoAuthenticationError,
-    GippoClient,
     GippoError,
     GippoLoginThrottled,
-    GippoSmsRequired,
 )
+from .cache import CacheCycleUnavailable, CacheError, StatusCache
 from .config import BotSettings, SettingsError
-from .formatting import format_status
+from .formatting import format_cached_status, format_empty_cache
 
 LOGGER = logging.getLogger(__name__)
 REFRESH_CALLBACK = "refresh_status:v3"
@@ -55,23 +52,6 @@ def _is_authorized(update: Update, settings: BotSettings) -> bool:
     return user is not None and (settings.open_access or user.id in settings.allowed_user_ids)
 
 
-async def _close_cabinet(application: Application) -> None:
-    """Close the shared cabinet session after Telegram shuts down."""
-
-    await _stop_recovery(application)
-    client: GippoClient | None = application.bot_data.get("gippo_client")
-    if client is not None:
-        await asyncio.to_thread(client.close)
-
-
-async def _stop_recovery(application: Application) -> None:
-    """Cancel the SMS monitor before the shared connections are closed."""
-
-    recovery = application.bot_data.get("login_recovery")
-    if recovery is not None:
-        await recovery.close()
-
-
 async def _configure_bot_commands(application: Application) -> None:
     """Expose only `/start` in Telegram's command menu."""
 
@@ -87,115 +67,16 @@ async def _deny(update: Update) -> None:
         await update.effective_message.reply_text("Нет доступа.")
 
 
-@dataclass(frozen=True, slots=True)
-class _StatusMessage:
-    text: str
-    pending: GippoSmsRequired | None = None
-
-
-async def _load_message(
-    client: GippoClient, *, owner: bool = False, poll_login: bool = False
-) -> _StatusMessage:
+async def _load_message(cache: StatusCache) -> str:
     try:
-        fetch = client.poll_sms_login if poll_login else client.fetch_status
-        status = await asyncio.to_thread(fetch)
-    except GippoSmsRequired as exc:
-        if owner:
-            waiting = "Ожидаю SMS для входа в GIPPO. "
-            if exc.automatic:
-                waiting += "Код будет получен автоматически. "
-            return _StatusMessage(
-                waiting + "При необходимости отправьте /gippo_sms "
-                "и пятизначный код в этом чате.",
-                exc,
-            )
-        if exc.automatic:
-            return _StatusMessage(
-                "Восстанавливаю доступ к GIPPO. "
-                "После получения SMS данные обновятся автоматически.",
-                exc,
-            )
-        return _StatusMessage(
-            "Восстанавливается доступ к GIPPO. Обновите данные через несколько минут.", exc
-        )
-    except GippoLoginThrottled:
-        LOGGER.info("GIPPO status refresh deferred by the login cooldown")
-        return _StatusMessage("Вход в GIPPO временно отложен. Попробуйте обновить данные позже.")
-    except GippoError:
-        LOGGER.exception("Could not load the GIPPO cabinet status")
-        return _StatusMessage("Не удалось получить данные GIPPO. Попробуйте ещё раз позже.")
+        status = await asyncio.to_thread(cache.read_status)
+    except CacheError:
+        LOGGER.warning("Could not read the saved GIPPO status")
+        return "Сохранённые данные GIPPO временно недоступны.\n\n" + format_empty_cache()
     except Exception:
-        LOGGER.exception("Unexpected error while loading the GIPPO cabinet status")
-        return _StatusMessage("Временная ошибка. Попробуйте ещё раз позже.")
-    LOGGER.info("GIPPO cabinet status loaded for Telegram")
-    return _StatusMessage(format_status(status, telegram_html=True))
-
-
-class _LoginRecovery:
-    """Share one bounded SMS monitor between all waiting status messages."""
-
-    def __init__(self, client: GippoClient) -> None:
-        self._client = client
-        self._messages: dict[tuple[int, int], Message] = {}
-        self._task: asyncio.Task[None] | None = None
-
-    def watch(self, message: Message, pending: GippoSmsRequired) -> None:
-        """Update this existing message when automatic login finishes."""
-
-        if not pending.automatic:
-            return
-        self._messages[(message.chat_id, message.message_id)] = message
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run(pending.expires_at))
-
-    async def close(self) -> None:
-        """Stop waiting without initiating or discarding a provider login."""
-
-        if self._task is not None:
-            self._task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._task
-        self._messages.clear()
-
-    async def _run(self, expires_at: float) -> None:
-        try:
-            while self._messages:
-                await asyncio.sleep(max(0, min(5, expires_at - time.time())))
-                result = await _load_message(self._client, poll_login=True)
-                if result.pending is None:
-                    break
-                expires_at = result.pending.expires_at
-                if not result.pending.automatic or time.time() >= expires_at:
-                    result = _StatusMessage(
-                        "Время ожидания SMS истекло. Попробуйте обновить данные позже."
-                    )
-                    break
-            else:
-                return
-            while self._messages:
-                _, message = self._messages.popitem()
-                try:
-                    await message.edit_text(
-                        result.text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=_refresh_keyboard(),
-                    )
-                except BadRequest as exc:
-                    if "message is not modified" not in str(exc).lower():
-                        LOGGER.warning("Could not update a waiting GIPPO status message")
-                except TelegramError:
-                    LOGGER.warning("Could not update a waiting GIPPO status message")
-        finally:
-            self._messages.clear()
-
-
-def _watch_recovery(application: Application, message: Message, result: _StatusMessage) -> None:
-    if result.pending is not None and result.pending.automatic:
-        recovery = application.bot_data.get("login_recovery")
-        if recovery is None:
-            recovery = _LoginRecovery(application.bot_data["gippo_client"])
-            application.bot_data["login_recovery"] = recovery
-        recovery.watch(message, result.pending)
+        LOGGER.exception("Unexpected error while reading the saved GIPPO status")
+        return "Временная ошибка. Попробуйте ещё раз позже."
+    return format_cached_status(status, telegram_html=True) if status else format_empty_cache()
 
 
 def _validate_card_images(settings: BotSettings) -> None:
@@ -239,16 +120,14 @@ async def _send_status(
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    client: GippoClient = context.application.bot_data["gippo_client"]
-    settings: BotSettings | None = context.application.bot_data.get("settings")
-    result = await _load_message(client, owner=_is_owner(update, settings))
+    cache: StatusCache = context.application.bot_data["status_cache"]
+    result = await _load_message(cache)
     if update.effective_message is not None:
-        message = await update.effective_message.reply_text(
-            result.text,
+        await update.effective_message.reply_text(
+            result,
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
         )
-        _watch_recovery(context.application, message, result)
 
 
 async def _send_start_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -292,19 +171,17 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("Обновляю…")
     except TelegramError:
         LOGGER.warning("Could not acknowledge the refresh callback", exc_info=True)
-    client: GippoClient = context.application.bot_data["gippo_client"]
-    result = await _load_message(client, owner=_is_owner(update, settings))
+    cache: StatusCache = context.application.bot_data["status_cache"]
+    result = await _load_message(cache)
     try:
         await query.edit_message_text(
-            result.text,
+            result,
             parse_mode=ParseMode.HTML,
             reply_markup=_refresh_keyboard(),
         )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
-    if isinstance(getattr(query, "message", None), Message):
-        _watch_recovery(context.application, query.message, result)
 
 
 async def retire_legacy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -357,9 +234,15 @@ async def confirm_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Do not leave the short-lived credential visible in the chat history.
     with suppress(TelegramError):
         await message.delete()
-    client: GippoClient = context.application.bot_data["gippo_client"]
+    cache: StatusCache = context.application.bot_data["status_cache"]
     try:
-        status = await asyncio.to_thread(client.submit_sms_code, context.args[0])
+        status = await asyncio.to_thread(
+            cache.submit_sms_code, settings.cabinet.create_client, context.args[0]
+        )
+    except CacheCycleUnavailable:
+        text = "Сейчас нет ожидающего SMS обновления. Данные обновляются в 08:00 и 22:00 по Минску."
+    except CacheError:
+        text = "Не удалось прочитать сохранённое обновление GIPPO."
     except GippoLoginThrottled:
         text = "Код больше не принимается. Следующая попытка входа будет доступна позже."
     except GippoAuthenticationError:
@@ -367,7 +250,7 @@ async def confirm_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except GippoError:
         text = "Не удалось подтвердить вход в GIPPO. Попробуйте обновить данные позже."
     else:
-        text = "Вход в GIPPO восстановлен.\n\n" + format_status(status, telegram_html=True)
+        text = "Данные GIPPO обновлены.\n\n" + format_cached_status(status, telegram_html=True)
     await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_refresh_keyboard())
 
 
@@ -375,22 +258,11 @@ def build_application(settings: BotSettings) -> Application:
     """Build a configured Telegram application without starting polling."""
 
     _validate_card_images(settings)
-    cabinet = settings.cabinet
-    client = GippoClient(
-        cabinet.login,
-        cabinet.password,
-        **cabinet.client_options(),
-    )
     application = (
-        ApplicationBuilder()
-        .token(settings.token)
-        .post_init(_configure_bot_commands)
-        .post_stop(_stop_recovery)
-        .post_shutdown(_close_cabinet)
-        .build()
+        ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
     )
     application.bot_data["settings"] = settings
-    application.bot_data["gippo_client"] = client
+    application.bot_data["status_cache"] = settings.cabinet.status_cache()
     application.add_handler(CommandHandler("start", show_start))
     application.add_handler(CommandHandler("gippo_sms", confirm_sms))
     application.add_handler(CallbackQueryHandler(refresh_status, pattern=f"^{REFRESH_CALLBACK}$"))

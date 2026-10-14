@@ -7,7 +7,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cabinet import DEFAULT_BASE_URL
+from .cabinet import DEFAULT_BASE_URL, GippoClient
+from .cache import DEFAULT_CACHE_PATH, StatusCache, cache_scope
 from .session import SessionStorageError, read_protected_token
 
 DEFAULT_GIPPO_CARD_IMAGE_PATH = Path("/srv/bots/gippo-bot/private/cards/gippo.png")
@@ -58,6 +59,7 @@ class CabinetSettings:
     sms_sender: str = "GIPPO"
     sms_ttl_seconds: int = 300
     sms_cooldown_seconds: int = 900
+    cache_path: Path = DEFAULT_CACHE_PATH
 
     @classmethod
     def from_environment(cls) -> CabinetSettings:
@@ -123,6 +125,7 @@ class CabinetSettings:
             sms_sender=sms_sender,
             sms_ttl_seconds=sms_ttl,
             sms_cooldown_seconds=sms_cooldown,
+            cache_path=Path(os.getenv("GIPPO_CACHE_PATH", str(DEFAULT_CACHE_PATH))).expanduser(),
         )
 
     def client_options(self) -> dict[str, object]:
@@ -139,6 +142,16 @@ class CabinetSettings:
             "sms_ttl_seconds": self.sms_ttl_seconds,
             "sms_cooldown_seconds": self.sms_cooldown_seconds,
         }
+
+    def create_client(self) -> GippoClient:
+        """Create a provider client only for an admitted scheduled cycle."""
+
+        return GippoClient(self.login, self.password, **self.client_options())
+
+    def status_cache(self) -> StatusCache:
+        """Return an account-scoped cache without provider network access."""
+
+        return StatusCache(self.cache_path, cache_scope(self.login, self.base_url, self.auth_mode))
 
 
 @dataclass(frozen=True, slots=True)

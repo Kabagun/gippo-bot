@@ -19,7 +19,6 @@ from gippo_bot.bot import (
     _send_card,
     _send_start_messages,
     _send_status,
-    _StatusMessage,
     _validate_card_images,
     build_application,
     confirm_sms,
@@ -27,7 +26,8 @@ from gippo_bot.bot import (
     retire_legacy_callback,
     show_start,
 )
-from gippo_bot.cabinet import DEFAULT_BASE_URL, GippoLoginThrottled, GippoSmsRequired
+from gippo_bot.cabinet import DEFAULT_BASE_URL
+from gippo_bot.cache import CacheCycleUnavailable, CacheError
 from gippo_bot.config import BotSettings, CabinetSettings, SettingsError
 
 
@@ -122,11 +122,9 @@ def test_refresh_updates_only_existing_status_message(
         callback_query=query,
     )
     context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
+        application=SimpleNamespace(bot_data={"settings": settings, "status_cache": object()})
     )
-    monkeypatch.setattr(
-        "gippo_bot.bot._load_message", AsyncMock(return_value=_StatusMessage("new status"))
-    )
+    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="new status"))
     send_card = AsyncMock()
     monkeypatch.setattr("gippo_bot.bot._send_card", send_card)
 
@@ -144,10 +142,10 @@ def test_refresh_updates_only_existing_status_message(
 def test_status_message_uses_html_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
     effective_message = SimpleNamespace(reply_text=AsyncMock())
     update = SimpleNamespace(effective_message=effective_message)
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={"gippo_client": object()}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"status_cache": object()}))
     monkeypatch.setattr(
         "gippo_bot.bot._load_message",
-        AsyncMock(return_value=_StatusMessage("<b>status</b>")),
+        AsyncMock(return_value="<b>status</b>"),
     )
 
     asyncio.run(_send_status(update, context, reply_markup=_refresh_keyboard()))
@@ -170,11 +168,9 @@ def test_unchanged_refresh_status_does_not_fail(monkeypatch: pytest.MonkeyPatch)
         callback_query=query,
     )
     context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
+        application=SimpleNamespace(bot_data={"settings": settings, "status_cache": object()})
     )
-    monkeypatch.setattr(
-        "gippo_bot.bot._load_message", AsyncMock(return_value=_StatusMessage("same status"))
-    )
+    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="same status"))
 
     asyncio.run(refresh_status(update, context))
 
@@ -274,15 +270,15 @@ def test_application_registers_only_start_and_refresh_actions(tmp_path: Path) ->
     )
 
     application = build_application(settings)
-    try:
-        assert [handler.callback.__name__ for handler in application.handlers[0]] == [
-            "show_start",
-            "confirm_sms",
-            "refresh_status",
-            "retire_legacy_callback",
-        ]
-    finally:
-        application.bot_data["gippo_client"].close()
+    assert [handler.callback.__name__ for handler in application.handlers[0]] == [
+        "show_start",
+        "confirm_sms",
+        "refresh_status",
+        "retire_legacy_callback",
+    ]
+    assert "gippo_client" not in application.bot_data
+    assert "login_recovery" not in application.bot_data
+    assert application.post_stop is None and application.post_shutdown is None
 
 
 @pytest.mark.parametrize(
@@ -308,7 +304,7 @@ def test_unauthorized_user_cannot_submit_or_start_sms() -> None:
         callback_query=None,
     )
     context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
+        application=SimpleNamespace(bot_data={"settings": settings, "status_cache": client}),
         args=["12345"],
     )
     asyncio.run(confirm_sms(update, context))
@@ -334,23 +330,76 @@ def test_owner_can_finish_pending_sms_without_new_sms() -> None:
         effective_message=message,
     )
     context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": client}),
+        application=SimpleNamespace(bot_data={"settings": settings, "status_cache": client}),
         args=["12345"],
     )
     asyncio.run(confirm_sms(update, context))
-    client.submit_sms_code.assert_called_once_with("12345")
+    client.submit_sms_code.assert_called_once_with(settings.cabinet.create_client, "12345")
     client.fetch_status.assert_not_called()
     message.delete.assert_awaited_once()
-    assert "Вход в GIPPO восстановлен" in message.reply_text.await_args.args[0]
+    assert "Данные GIPPO обновлены" in message.reply_text.await_args.args[0]
 
 
-def test_public_pending_message_does_not_expose_owner_authentication_action() -> None:
-    client = Mock()
-    client.fetch_status.side_effect = GippoSmsRequired(automatic=True, expires_at=100)
-    result = asyncio.run(_load_message(client))
-    assert "/gippo_sms" not in result.text
-    assert "автоматически" in result.text
-    assert result.pending.automatic
-    assert "/gippo_sms" in asyncio.run(_load_message(client, owner=True)).text
-    client.fetch_status.side_effect = GippoLoginThrottled(100)
-    assert "отложен" in asyncio.run(_load_message(client)).text
+@pytest.mark.parametrize("empty", [None, CacheError("invalid")])
+def test_empty_or_invalid_cache_does_not_attempt_authentication(empty) -> None:
+    cache = Mock()
+    if isinstance(empty, Exception):
+        cache.read_status.side_effect = empty
+    else:
+        cache.read_status.return_value = empty
+    result = asyncio.run(_load_message(cache))
+    assert "Ближайшее обновление" in result and "/gippo_sms" not in result
+    cache.fetch_status.assert_not_called()
+    cache.poll_sms_login.assert_not_called()
+    cache.submit_sms_code.assert_not_called()
+
+
+def test_owner_code_outside_active_cycle_is_rejected_without_live_fetch() -> None:
+    settings = replace(_settings(open_access=True, allowed_user_ids=frozenset()), owner_user_id=123)
+    cache = Mock()
+    cache.submit_sms_code.side_effect = CacheCycleUnavailable("outside schedule")
+    message = SimpleNamespace(reply_text=AsyncMock(), delete=AsyncMock())
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123),
+        effective_chat=SimpleNamespace(type="private"),
+        effective_message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": settings, "status_cache": cache}),
+        args=["12345"],
+    )
+    asyncio.run(confirm_sms(update, context))
+    assert "08:00 и 22:00" in message.reply_text.await_args.args[0]
+    cache.fetch_status.assert_not_called()
+    cache.poll_sms_login.assert_not_called()
+
+
+def test_normal_status_handlers_read_cache_and_do_not_poll_or_fetch(monkeypatch) -> None:
+    from gippo_bot.cabinet import parse_personal_page
+
+    cache = Mock()
+    cache.read_status.return_value = parse_personal_page(
+        "Ваша текущая скидка 1% Ваши покупки в этом месяце 247.27 "
+        "До следующего уровня осталось 252.73"
+    )
+    configured = _settings(open_access=True, allowed_user_ids=frozenset())
+    factory = Mock(side_effect=AssertionError("Ordinary Telegram requests must use the cache"))
+    monkeypatch.setattr(CabinetSettings, "create_client", factory)
+    message = SimpleNamespace(reply_text=AsyncMock())
+    query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=999),
+        effective_message=message,
+        callback_query=query,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": configured, "status_cache": cache})
+    )
+    asyncio.run(_send_status(update, context))
+    asyncio.run(refresh_status(update, context))
+    assert cache.read_status.call_count == 2
+    assert "Данные получены" in message.reply_text.await_args.args[0]
+    assert "Данные получены" in query.edit_message_text.await_args.args[0]
+    factory.assert_not_called()
+    cache.fetch_status.assert_not_called()
+    cache.poll_sms_login.assert_not_called()

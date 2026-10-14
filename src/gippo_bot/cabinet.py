@@ -34,6 +34,10 @@ class GippoAuthenticationError(GippoError):
     """Raised when the cabinet does not accept the configured credentials."""
 
 
+class _GippoLoginRejected(GippoAuthenticationError):
+    """A definite rejection, rather than an unrecognized or uncertain response."""
+
+
 class GippoPageError(GippoError):
     """Raised when the expected loyalty values cannot be read from the page."""
 
@@ -231,7 +235,21 @@ class GippoClient:
         request, including when another process completed or cleared the login.
         """
 
-        return self._operate(lambda: self._fetch_status(allow_login=False))
+        return self._operate(self._continue_sms_login)
+
+    def _continue_sms_login(self) -> CabinetStatus:
+        if (
+            self._pending
+            and self._pending["phase"] == "waiting"
+            and not self._pending.get("verify_pending", bool(self._pending["submitted"]))
+            and not self._authenticated
+        ):
+            # A waiting code has not authenticated the provider session yet.
+            # Poll the local receiver only, rather than GET /personal/ every 5s.
+            return self._poll_pending()
+        # Submitted codes may have succeeded before an uncertain response or
+        # a process interruption. Verify that saved session before polling.
+        return self._fetch_status(allow_login=False)
 
     def close(self) -> None:
         """Close connection pools idempotently and prohibit further requests."""
@@ -274,6 +292,10 @@ class GippoClient:
                 raise GippoError("Could not communicate with the GIPPO cabinet") from exc
 
     def _fetch_status(self, *, allow_login: bool = True) -> CabinetStatus:
+        if allow_login and self._pending and time.time() >= self._pending["expires_at"]:
+            # A later scheduled cycle must not be consumed by yesterday's
+            # expired challenge. Keep the provider backoff unchanged.
+            self._discard_pending()
         # Pending cookies can already have been authenticated before a crash.
         if self._authenticated or self._client.cookies:
             response = self._get_personal()
@@ -342,6 +364,7 @@ class GippoClient:
             "phase": "sending",
             "last_poll_at": 0.0,
             "submitted": [],
+            "verify_pending": False,
         }
         self._save()
         try:
@@ -400,15 +423,23 @@ class GippoClient:
             self._discard_pending()
             raise GippoLoginThrottled(self._next_login_at)
         submitted.append(digest)
+        self._pending["verify_pending"] = True
         self._save()
-        payload = self._post_auth({"PROP[STEP]": "2", "PROP[SMS_CODE]": code})
-        self._require_login_success(payload)
-        return self._verify_login()
+        try:
+            payload = self._post_auth({"PROP[STEP]": "2", "PROP[SMS_CODE]": code})
+            self._require_login_success(payload)
+            return self._verify_login()
+        except _GippoLoginRejected:
+            # A definite rejection cannot have authenticated the session.
+            # Retain code attempt limits without checking /personal/ every poll.
+            if self._pending:
+                self._pending["verify_pending"] = False
+            raise
 
     def _verify_login(self) -> CabinetStatus:
         response = self._get_personal()
         if self._is_login_response(response):
-            raise GippoAuthenticationError("GIPPO cabinet authentication was not accepted")
+            raise _GippoLoginRejected("GIPPO cabinet authentication was not accepted")
         return self._accept_personal(response)
 
     def _accept_personal(self, response: httpx.Response) -> CabinetStatus:
@@ -450,15 +481,17 @@ class GippoClient:
             },
             follow_redirects=False,
         )
-        if response.status_code in {401, 403, 429}:
-            raise GippoAuthenticationError("GIPPO cabinet authentication was not accepted")
+        if 400 <= response.status_code < 500:
+            raise _GippoLoginRejected("GIPPO cabinet authentication was not accepted")
         response.raise_for_status()
         try:
             payload = response.json()
         except ValueError as exc:
             raise GippoAuthenticationError("GIPPO returned an invalid login response") from exc
-        if not isinstance(payload, dict) or payload.get("err") or payload.get("showError"):
-            raise GippoAuthenticationError("GIPPO cabinet authentication was not accepted")
+        if not isinstance(payload, dict):
+            raise GippoAuthenticationError("GIPPO returned an invalid login response")
+        if payload.get("err") or payload.get("showError"):
+            raise _GippoLoginRejected("GIPPO cabinet authentication was not accepted")
         return payload
 
     def _require_login_success(self, payload: dict[str, Any]) -> None:
@@ -549,6 +582,7 @@ class GippoClient:
                 or not math.isfinite(pending["last_poll_at"])
                 or not isinstance(pending["submitted"], list)
                 or len(pending["submitted"]) > 3
+                or ("verify_pending" in pending and not isinstance(pending["verify_pending"], bool))
                 or not all(
                     isinstance(item, str) and re.fullmatch(r"[a-f0-9]{64}", item)
                     for item in pending["submitted"]

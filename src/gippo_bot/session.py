@@ -102,6 +102,12 @@ class ProtectedSessionStore:
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(temporary, self.path)
+            if os.name != "nt":
+                directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except OSError as exc:
             raise SessionStorageError("The private GIPPO session file cannot be saved") from exc
         finally:

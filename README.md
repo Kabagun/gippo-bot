@@ -14,30 +14,42 @@ allow-list. The production deployment is configured for open access.
 
 ## Commands
 
-- `/start` — send the GIPPO card, the Belmarket card, and then current status.
+- `/start` — send the GIPPO card, the Belmarket card, and then saved status.
 
-The final status message has one **Обновить** button. It updates only that text
-message; card images are not sent again. Every button from an earlier menu asks
+The final status message has one **Обновить** button. It rereads the saved status
+and updates only that text message; it never contacts GIPPO or requests an SMS.
+Card images are not sent again. Every button from an earlier menu asks
 the user to call `/start` and cannot access its old action.
 
-The running bot keeps one shared authenticated GIPPO HTTP session for all
-Telegram users. It saves its cookies in a protected file and checks that session
-before requesting cabinet status. If no valid session exists, the status request
-starts SMS login. A single background monitor polls that existing challenge every
-5 seconds and completes login when the code arrives. It edits waiting status
-messages in place, so users do not need a second refresh and the bot does not send
-duplicate cards or status messages. A request does not wait several minutes for
-an SMS.
-An authenticated loyalty page may also include the profile phone editor.
+Cabinet values update at most twice a day: **08:00 and 22:00 in Europe/Minsk**.
+A separate systemd user timer runs the bounded cache-refresh command. Ordinary
+Telegram requests and `gippo-check` read disk only, including inside those time
+windows. Each message shows the actual successful receipt time in Minsk:
+«Данные получены сегодня в 10:00», «Данные получены вчера в 22:00», or a concrete
+date and time for an older snapshot. Failed updates never change that timestamp.
 
-When a challenge expires, the monitor stops without automatically requesting
-another SMS. The existing provider cooldown and challenge TTL remain in effect.
+Each scheduled attempt consumes its date/hour slot before provider network I/O.
+Duplicate starts, restarts and failed jobs cannot repeat that slot. The last
+successful snapshot survives restarts and failed updates. During an update or
+SMS wait, the bot continues showing that old snapshot. With an empty cache, it
+shows the next future scheduled update; it never fetches initial data on demand.
+No Telegram recipient IDs or profiles are stored.
+
+The job reuses protected session cookies. If it needs SMS, it creates one
+challenge and polls only the local receiver every 5 seconds until that challenge
+expires, at most 300 seconds. Receipt of the five-digit code completes that same
+update. Waiting polls do not repeatedly load the cabinet page or send another
+SMS. The latest signed-in profile detection and provider backoff remain intact.
 
 The optional owner can confirm an existing challenge in a private chat with
 `/gippo_sms 12345`. The code must contain exactly five ASCII digits. This command
 is hidden from the public command menu and rejected for every other user and for
-group chats. Its message is deleted when Telegram allows it. Normal users cannot
-supply or change the shared account's authentication code.
+group chats. It is accepted only while a scheduled update is actively waiting
+for SMS, before its original deadline. Successful confirmation saves the status
+once and closes that cycle; the timer stops before another provider operation.
+Outside an active cycle the command performs no provider request. Its message
+is deleted when Telegram allows it. Normal users cannot supply or change the
+shared account's authentication code.
 
 ## Local setup
 
@@ -57,9 +69,12 @@ gippo-check --json
 gippo-bot
 ```
 
-`gippo-check` verifies the cabinet integration without requiring a Telegram bot
-token. A check without a valid session can start or resume an SMS login.
-`gippo-check --sms-code` prompts privately for a pending challenge's code.
+`gippo-check` reads the saved snapshot without requiring a Telegram bot token.
+It cannot start or poll a login. `--json` reports an empty snapshot and the next
+update if no saved status exists. `gippo-check --sms-code` prompts privately only
+while an admitted scheduled cycle is waiting for SMS; it cannot start a cycle.
+`gippo-cache-refresh` is for the timer and admits new work only in the first
+60 seconds after 08:00 or 22:00. Invoking it at other times skips all provider I/O.
 Do not pass codes as shell arguments. Do not commit `.env`, session files,
 tokens or card images.
 
@@ -74,6 +89,7 @@ tokens or card images.
 | `GIPPO_AUTH_MODE` | no | `sms` (default), or optional legacy `password` mode |
 | `GIPPO_PHONE` | SMS mode | Shared account phone beginning with `+375` |
 | `GIPPO_SESSION_PATH` | SMS mode | Private persistent cookie/challenge file |
+| `GIPPO_CACHE_PATH` | no | Private status/slot state; defaults to `/srv/bots/gippo-bot/private/status-cache.json` |
 | `SMS_FORWARDER_URL` | no | Defaults to `http://127.0.0.1:18090`; use HTTPS for a remote service |
 | `SMS_FORWARDER_TOKEN` | automatic SMS | Consumer-scoped service token; without it SMS mode uses manual confirmation |
 | `SMS_FORWARDER_TOKEN_FILE` | automatic SMS | Alternate owner-only file containing one consumer token; cannot be combined with inline token |
@@ -95,7 +111,7 @@ not logged, avoiding accidental disclosure of cabinet data or the bot token.
 Card images contain account-linked barcodes and must be kept outside the public
 repository in owner-readable files.
 
-On Linux the session directory must belong to the service
+On Linux the session and cache directory must belong to the service
 user and have mode `0700`; its files use mode `0600`. The Windows operator
 must restrict the equivalent directory's ACL to the service owner. State is
 written atomically. A process lock and a shared thread lock prevent concurrent
@@ -110,16 +126,16 @@ The client creates its forwarding challenge before GIPPO sends the SMS.
 An unavailable receiver prevents the SMS request. Every attempted login
 reserves a cooldown before network I/O; failures increase that delay up to
 24 hours. Pending cookies, code-attempt hashes, and the delay survive a
-restart. Ambiguous network failures never trigger an immediate resend. The
-background monitor never resends automatically when its challenge expires.
+restart. Ambiguous network failures never trigger an immediate resend. A
+scheduled cycle never resends automatically when its challenge expires.
 Successful authentication clears the accumulated failure backoff and retains
 at most the configured base SMS cooldown (15 minutes by default). Successful
 status refreshes do not extend that deadline. If the saved session is rejected
-after the cooldown, the next status request starts a new SMS login.
+after the cooldown, the next scheduled cycle may start a new SMS login.
 At most three distinct codes can be tried for a challenge. Authentication
 requires a positive login response and a valid authenticated personal page.
 Runtime logs record session rejection, confirmed authentication, and whether a
-Telegram status refresh succeeded or was deferred, without codes or cookies.
+scheduled cache update succeeded or failed, without codes or cookies.
 
 The forwarding contract uses Bearer authentication:
 `POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a `code_pattern`
@@ -193,10 +209,25 @@ mkdir -p /srv/bots/gippo-bot/private
 chmod 700 /srv/bots/gippo-bot/private
 mkdir -p ~/.config/systemd/user
 cp /srv/bots/gippo-bot/app/deploy/gippo-bot.service ~/.config/systemd/user/
+cp /srv/bots/gippo-bot/app/deploy/gippo-cache-refresh.service ~/.config/systemd/user/
+cp /srv/bots/gippo-bot/app/deploy/gippo-cache-refresh.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now gippo-bot.service
+systemctl --user enable --now gippo-cache-refresh.timer
 ```
 
 Check it with `systemctl --user status gippo-bot.service` and
 `journalctl --user -u gippo-bot.service`. The service runs entirely as the
 unprivileged `apps` user and restarts automatically after transient failures.
+
+Check upcoming updates with `systemctl --user list-timers gippo-cache-refresh.timer`.
+The timer sets `Persistent=false`, `AccuracySec=1s`, and `RandomizedDelaySec=0`.
+It does not refresh on boot, service restart, or timer enablement. A missed slot
+is skipped until the next future scheduled time. The CLI's admission guard is
+authoritative even for a manually started service. The refresh unit has a
+7-minute timeout and no automatic retry; a failure keeps the old cache.
+
+Windows uses the conditional project dependency `tzdata` for `ZoneInfo`; Linux
+uses its system IANA timezone database. The schedule uses `Europe/Minsk`, not a
+fixed UTC offset. Keep the protected cache file: deleting it also deletes the
+durable daily attempt history.

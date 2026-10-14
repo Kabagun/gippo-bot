@@ -1,0 +1,15 @@
+[Unit]
+Description=Scheduled GIPPO status cache refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/bots/gippo-bot/app
+EnvironmentFile=/srv/bots/gippo-bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/bots/gippo-bot/venv/bin/python -m gippo_bot.refresh
+TimeoutStartSec=7min
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh GIPPO status at 08:00 and 22:00 Minsk time
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Minsk
+OnCalendar=*-*-* 22:00:00 Europe/Minsk
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=false
+Unit=gippo-cache-refresh.service
+
+[Install]
+WantedBy=timers.target

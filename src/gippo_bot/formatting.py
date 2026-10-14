@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from .cabinet import CabinetStatus
+from .cache import MINSK, next_update, utc_now
 
 _THREE_PERCENT_THRESHOLD = Decimal("500")
 _FIVE_PERCENT_THRESHOLD = Decimal("1000")
@@ -55,3 +57,33 @@ def format_status(status: CabinetStatus, *, telegram_html: bool = False) -> str:
             f"До следующего уровня: {_format_decimal(status.until_next_level, 2)} руб.",
         )
     return "\n".join(lines)
+
+
+def format_cached_status(
+    status: CabinetStatus, *, telegram_html: bool = False, now: datetime | None = None
+) -> str:
+    """Show saved cabinet values and their successful update time in Minsk."""
+
+    received = status.fetched_at.astimezone(MINSK)
+    today = (now or utc_now()).astimezone(MINSK).date()
+    if received.date() == today:
+        timestamp = "сегодня в " + received.strftime("%H:%M")
+    elif received.date() == today - timedelta(days=1):
+        timestamp = "вчера в " + received.strftime("%H:%M")
+    else:
+        timestamp = received.strftime("%d.%m.%Y в %H:%M")
+    return (
+        format_status(status, telegram_html=telegram_html)
+        + f"\n\n🕒 Данные получены {timestamp} (Минск)"
+    )
+
+
+def format_empty_cache(*, now: datetime | None = None) -> str:
+    """Explain an empty cache and its next future update without live fetching."""
+
+    timestamp = next_update(now or utc_now()).strftime("%d.%m.%Y в %H:%M")
+    return (
+        "Сохранённых данных GIPPO пока нет.\n"
+        f"Ближайшее обновление: {timestamp} (Минск).\n"
+        "Данные обновляются ежедневно в 08:00 и 22:00."
+    )
