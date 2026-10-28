@@ -78,26 +78,47 @@ def test_format_status_bolds_discount_lines_for_telegram() -> None:
 
 
 @pytest.mark.parametrize(
-    ("current", "expected"),
+    ("received", "current", "expected"),
     [
-        (datetime(2026, 10, 14, 20, 0, tzinfo=UTC), "сегодня в 22:02"),
-        (datetime(2026, 10, 14, 21, 30, tzinfo=UTC), "вчера в 22:02"),
-        (datetime(2026, 10, 16, 12, 0, tzinfo=UTC), "14.10.2026 в 22:02"),
+        (
+            datetime(2026, 10, 30, 19, 0, tzinfo=UTC),
+            datetime(2026, 10, 30, 20, 0, tzinfo=UTC),
+            "30.10.2026 в 22:00",
+        ),
+        (
+            datetime(2026, 10, 30, 19, 0, tzinfo=UTC),
+            datetime(2026, 10, 30, 21, 30, tzinfo=UTC),
+            "30.10.2026 в 22:00",
+        ),
+        (
+            datetime(2026, 10, 30, 19, 0, tzinfo=UTC),
+            datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
+            "30.10.2026 в 22:00",
+        ),
+        (
+            datetime(2026, 10, 30, 21, 5, tzinfo=UTC),
+            datetime(2026, 10, 30, 21, 30, tzinfo=UTC),
+            "31.10.2026 в 00:05",
+        ),
     ],
 )
-def test_cached_status_displays_actual_receipt_today_yesterday_or_date_in_minsk(
-    current, expected
+def test_cached_status_always_displays_absolute_receipt_date_and_time_in_minsk(
+    received: datetime, current: datetime, expected: str
 ) -> None:
     status = CabinetStatus(
         Decimal("1"),
         Decimal("247.27"),
         Decimal("252.73"),
-        datetime(2026, 10, 14, 19, 2, tzinfo=UTC),
+        received,
     )
-    assert format_cached_status(status, now=current).endswith(
-        f"🕒 Данные получены {expected} (Минск)"
-    )
-    assert "<b>" in format_cached_status(status, telegram_html=True, now=current)
+    for telegram_html in (False, True):
+        text = format_cached_status(status, telegram_html=telegram_html, now=current)
+        assert text == (
+            format_status(status, telegram_html=telegram_html)
+            + f"\n\n🕒 Данные получены {expected} (Минск)"
+        )
+        assert "сегодня" not in text
+        assert "вчера" not in text
 
 
 def test_empty_cache_shows_next_future_slot_after_minsk_midnight() -> None:

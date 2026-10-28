@@ -24,9 +24,9 @@ the user to call `/start` and cannot access its old action.
 Cabinet values update at most twice a day: **08:00 and 22:00 in Europe/Minsk**.
 A separate systemd user timer runs the bounded cache-refresh command. Ordinary
 Telegram requests and `gippo-check` read disk only, including inside those time
-windows. Each message shows the actual successful receipt time in Minsk:
-«Данные получены сегодня в 10:00», «Данные получены вчера в 22:00», or a concrete
-date and time for an older snapshot. Failed updates never change that timestamp.
+windows. Each message shows the actual successful receipt date and time in Minsk:
+«🕒 Данные получены 30.10.2026 в 22:00 (Минск)», even on the same or following day.
+Failed updates never change that timestamp.
 
 Each scheduled attempt consumes its date/hour slot before provider network I/O.
 Duplicate starts, restarts and failed jobs cannot repeat that slot. The last

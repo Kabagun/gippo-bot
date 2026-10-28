@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 
 from .cabinet import CabinetStatus
@@ -62,16 +62,9 @@ def format_status(status: CabinetStatus, *, telegram_html: bool = False) -> str:
 def format_cached_status(
     status: CabinetStatus, *, telegram_html: bool = False, now: datetime | None = None
 ) -> str:
-    """Show saved cabinet values and their successful update time in Minsk."""
+    """Show saved cabinet values and their absolute successful receipt time in Minsk."""
 
-    received = status.fetched_at.astimezone(MINSK)
-    today = (now or utc_now()).astimezone(MINSK).date()
-    if received.date() == today:
-        timestamp = "сегодня в " + received.strftime("%H:%M")
-    elif received.date() == today - timedelta(days=1):
-        timestamp = "вчера в " + received.strftime("%H:%M")
-    else:
-        timestamp = received.strftime("%d.%m.%Y в %H:%M")
+    timestamp = status.fetched_at.astimezone(MINSK).strftime("%d.%m.%Y в %H:%M")
     return (
         format_status(status, telegram_html=telegram_html)
         + f"\n\n🕒 Данные получены {timestamp} (Минск)"
