@@ -33,6 +33,8 @@ Duplicate starts, restarts and failed jobs cannot repeat that slot. The last
 successful snapshot survives restarts and failed updates. During an update or
 SMS wait, the bot continues showing that old snapshot. With an empty cache, it
 shows the next future scheduled update; it never fetches initial data on demand.
+If saved data cannot be read, the bot reports temporary unavailability separately
+from an empty cache and shows the next scheduled update without promising recovery.
 No Telegram recipient IDs or profiles are stored.
 
 The job reuses protected session cookies. If it needs SMS, it creates one

@@ -71,12 +71,27 @@ def format_cached_status(
     )
 
 
+def _format_next_update(now: datetime | None) -> str:
+    return next_update(now or utc_now()).strftime("%d.%m.%Y в %H:%M")
+
+
 def format_empty_cache(*, now: datetime | None = None) -> str:
     """Explain an empty cache and its next future update without live fetching."""
 
-    timestamp = next_update(now or utc_now()).strftime("%d.%m.%Y в %H:%M")
+    timestamp = _format_next_update(now)
     return (
         "Сохранённых данных GIPPO пока нет.\n"
         f"Ближайшее обновление: {timestamp} (Минск).\n"
         "Данные обновляются ежедневно в 08:00 и 22:00."
+    )
+
+
+def format_unavailable_cache(*, now: datetime | None = None) -> str:
+    """Explain a cache read failure without claiming that saved data is absent."""
+
+    timestamp = _format_next_update(now)
+    return (
+        "Сохранённые данные GIPPO временно недоступны.\n"
+        "Попробуйте открыть их позже.\n"
+        f"Ближайшее обновление по расписанию: {timestamp} (Минск)."
     )

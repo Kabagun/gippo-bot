@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -340,15 +341,42 @@ def test_owner_can_finish_pending_sms_without_new_sms() -> None:
     assert "Данные GIPPO обновлены" in message.reply_text.await_args.args[0]
 
 
-@pytest.mark.parametrize("empty", [None, CacheError("invalid")])
-def test_empty_or_invalid_cache_does_not_attempt_authentication(empty) -> None:
+@pytest.mark.parametrize(
+    ("cached_result", "expected_prefix"),
+    [
+        (None, "Сохранённых данных GIPPO пока нет."),
+        (
+            CacheError("Permission denied: /private/synthetic-cache.json; synthetic-secret"),
+            "Сохранённые данные GIPPO временно недоступны.",
+        ),
+    ],
+)
+def test_empty_or_unreadable_cache_has_distinct_copy_without_authentication(
+    cached_result, expected_prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cache = Mock()
-    if isinstance(empty, Exception):
-        cache.read_status.side_effect = empty
+    if isinstance(cached_result, Exception):
+        cache.read_status.side_effect = cached_result
     else:
-        cache.read_status.return_value = empty
+        cache.read_status.return_value = cached_result
+    factory = Mock(side_effect=AssertionError("Cache reads must not create a provider client"))
+    monkeypatch.setattr(CabinetSettings, "create_client", factory)
+    monkeypatch.setattr(
+        "gippo_bot.formatting.utc_now", lambda: datetime(2026, 11, 3, 5, 0, tzinfo=UTC)
+    )
     result = asyncio.run(_load_message(cache))
-    assert "Ближайшее обновление" in result and "/gippo_sms" not in result
+    assert result.startswith(expected_prefix)
+    assert "03.11.2026 в 22:00 (Минск)" in result
+    assert "/gippo_sms" not in result
+    if isinstance(cached_result, Exception):
+        assert "Сохранённых данных GIPPO пока нет" not in result
+        assert str(cached_result) not in result
+        assert "synthetic-cache.json" not in result
+        assert "synthetic-secret" not in result
+    else:
+        assert "недоступны" not in result
+    cache.read_status.assert_called_once_with()
+    factory.assert_not_called()
     cache.fetch_status.assert_not_called()
     cache.poll_sms_login.assert_not_called()
     cache.submit_sms_code.assert_not_called()

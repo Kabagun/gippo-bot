@@ -4,7 +4,12 @@ from decimal import Decimal
 import pytest
 
 from gippo_bot.cabinet import CabinetStatus
-from gippo_bot.formatting import format_cached_status, format_empty_cache, format_status
+from gippo_bot.formatting import (
+    format_cached_status,
+    format_empty_cache,
+    format_status,
+    format_unavailable_cache,
+)
 
 
 def test_format_status_uses_russian_decimal_notation() -> None:
@@ -123,5 +128,28 @@ def test_cached_status_always_displays_absolute_receipt_date_and_time_in_minsk(
 
 def test_empty_cache_shows_next_future_slot_after_minsk_midnight() -> None:
     text = format_empty_cache(now=datetime(2026, 10, 14, 21, 30, tzinfo=UTC))
-    assert "15.10.2026 в 08:00 (Минск)" in text
-    assert "08:00 и 22:00" in text
+    assert text == (
+        "Сохранённых данных GIPPO пока нет.\n"
+        "Ближайшее обновление: 15.10.2026 в 08:00 (Минск).\n"
+        "Данные обновляются ежедневно в 08:00 и 22:00."
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (datetime(2026, 11, 3, 4, 0, tzinfo=UTC), "03.11.2026 в 08:00"),
+        (datetime(2026, 11, 3, 5, 0, tzinfo=UTC), "03.11.2026 в 22:00"),
+        (datetime(2026, 11, 3, 21, 30, tzinfo=UTC), "04.11.2026 в 08:00"),
+    ],
+)
+def test_unavailable_cache_shows_schedule_without_claiming_data_is_absent(
+    current: datetime, expected: str
+) -> None:
+    text = format_unavailable_cache(now=current)
+    assert text == (
+        "Сохранённые данные GIPPO временно недоступны.\n"
+        "Попробуйте открыть их позже.\n"
+        f"Ближайшее обновление по расписанию: {expected} (Минск)."
+    )
+    assert "пока нет" not in text

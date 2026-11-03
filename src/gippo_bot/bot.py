@@ -26,7 +26,7 @@ from .cabinet import (
 )
 from .cache import CacheCycleUnavailable, CacheError, StatusCache
 from .config import BotSettings, SettingsError
-from .formatting import format_cached_status, format_empty_cache
+from .formatting import format_cached_status, format_empty_cache, format_unavailable_cache
 
 LOGGER = logging.getLogger(__name__)
 REFRESH_CALLBACK = "refresh_status:v3"
@@ -72,7 +72,7 @@ async def _load_message(cache: StatusCache) -> str:
         status = await asyncio.to_thread(cache.read_status)
     except CacheError:
         LOGGER.warning("Could not read the saved GIPPO status")
-        return "Сохранённые данные GIPPO временно недоступны.\n\n" + format_empty_cache()
+        return format_unavailable_cache()
     except Exception:
         LOGGER.exception("Unexpected error while reading the saved GIPPO status")
         return "Временная ошибка. Попробуйте ещё раз позже."
