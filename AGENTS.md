@@ -10,3 +10,7 @@
 - Deploy requests authorize drafting and sending after approval. After implementation and validation, get approval for the exact final message before deployment unless waived; renew approval for substantial edits. Then deploy → verify the new version is running and reachable → broadcast.
 - Explain user benefits with readable spacing, grouped bullets and restrained emoji; technical details only when useful. Send silently when supported or required, idempotently once per version; retry only failed recipients. Report only sent/failed counts to the owner.
 <!-- codex-config:bots:end -->
+
+## Project release policy
+- Release and update announcements are disabled for this bot. Deploy and verify without sending a broadcast or asking for notification recipients or message approval.
+- This project-specific suppression overrides the shared release notification rules above until the user explicitly requests an announcement.
