@@ -92,9 +92,9 @@ tokens or card images.
 | `GIPPO_PHONE` | SMS mode | Shared account phone beginning with `+375` |
 | `GIPPO_SESSION_PATH` | SMS mode | Private persistent cookie/challenge file |
 | `GIPPO_CACHE_PATH` | no | Private status/slot state; defaults to `/srv/bots/gippo-bot/private/status-cache.json` |
-| `SMS_FORWARDER_URL` | no | Defaults to `http://127.0.0.1:18090`; use HTTPS for a remote service |
-| `SMS_FORWARDER_TOKEN` | automatic SMS | Consumer-scoped service token; without it SMS mode uses manual confirmation |
-| `SMS_FORWARDER_TOKEN_FILE` | automatic SMS | Alternate owner-only file containing one consumer token; cannot be combined with inline token |
+| `SMS_FORWARDER_URL` | no | SMS Router base URL. Defaults to `http://127.0.0.1:18090`. Use HTTPS for a remote service |
+| `SMS_FORWARDER_TOKEN` | automatic SMS | SMS Router challenge consumer token, if supplied inline |
+| `SMS_FORWARDER_TOKEN_FILE` | automatic SMS | Owner-only file containing the SMS Router challenge consumer token, if supplied via a file |
 | `GIPPO_SMS_SENDER` | no | Exact expected SMS sender, defaults to `GIPPO` |
 | `GIPPO_SMS_TTL_SECONDS` | no | Challenge validity, 60–300 seconds; default 300 |
 | `GIPPO_SMS_COOLDOWN_SECONDS` | no | Minimum SMS interval, at least 900 seconds; default 900 |
@@ -120,9 +120,16 @@ written atomically. A process lock and a shared thread lock prevent concurrent
 requests from sending duplicate SMS. Damaged, mismatched, or insecure state
 files fail closed instead of starting a new login.
 
-The forwarding token can live in a separate `0600` file beneath the `0700`
-private directory; configure `SMS_FORWARDER_TOKEN_FILE` to avoid copying it
-into a process argument or shell history. Only one token source may be set.
+### SMS Router setup
+
+SMS Router is the new name of SMS Forwarder. The bot still reads `SMS_FORWARDER_*`
+settings. For an existing installation, keep the configured router URL, challenge
+consumer token, phone service alias, and phone webhook URL. The rename requires no
+registration or credential rotation.
+
+Prefer a separate `0600` token file beneath the `0700` private directory. Configure
+either `SMS_FORWARDER_TOKEN_FILE` or `SMS_FORWARDER_TOKEN`. If neither is configured,
+SMS mode requires manual confirmation by the bot owner.
 
 The client creates its forwarding challenge before GIPPO sends the SMS.
 An unavailable receiver prevents the SMS request. Every attempted login
@@ -139,48 +146,54 @@ requires a positive login response and a valid authenticated personal page.
 Runtime logs record session rejection, confirmed authentication, and whether a
 scheduled cache update succeeded or failed, without codes or cookies.
 
-The forwarding contract uses Bearer authentication:
-`POST /internal/v1/challenges` with `sender=GIPPO`, `ttl_seconds`, and a `code_pattern`
-that matches exactly five ASCII digits; `GET /internal/v1/challenges/{id}` returns
-`waiting`, `received`, or `expired`; `DELETE` clears it. The service controls the
-phone/source association for each consumer. No phone ownership is taken from a
-public Telegram user.
+The bot authenticates to SMS Router with the challenge consumer token as a Bearer
+token. It creates a challenge with `POST /internal/v1/challenges` using the expected
+sender, `ttl_seconds`, and a `code_pattern` for five-digit codes. It polls
+`GET /internal/v1/challenges/{id}` for `waiting`, `received`, or `expired` and clears
+the challenge with `DELETE /internal/v1/challenges/{id}`. SMS Router controls the
+phone and sender association for each consumer.
 
-Register the bot on the common server as the `apps` user. The internal consumer
-name stays `gippo-bot`; its public phone service alias is `gippo`:
+For a new installation, ask the SMS Router administrator to provision the login
+consumer. The administrator runs `register` with the administrator credential.
+The example below uses synthetic consumer, owner, and service names.
 
 ```bash
-sms-forwarder-client register --name gippo-bot --owner kabaye --service gippo --sender GIPPO
+sms-router-client register --name example-gippo-bot --owner example-owner --service example-gippo --sender GIPPO
 ```
+
+The shared apps enrollment key is for `app-register` and does not grant access to
+legacy consumer registration or credential management. Ask the administrator for
+consumer or device credential rotation, consumer revocation, or alias changes.
+A Telegram Inbox Bot can subscribe separately if the administrator grants access
+to the same stream. GIPPO Bot continues using its challenge consumer token and
+the challenge API.
 
 The shared phone contract uses one owner URL returned by registration:
 `POST /v1/sms/<device-token>`. The test URL uses the same path with `/test`
 appended. These URLs are shared by the services registered for that phone owner.
 
-This contract requires SMS Forwarder 0.3.0. Update the gateway before switching
-the phone to common ingress. After the gateway update, change an existing
-consumer's public alias with the administrator command:
+If an alias change is needed, the administrator can use `set-service`:
 
 ```bash
-sms-forwarder-client set-service --name gippo-bot --service gippo
+sms-router-client set-service --name example-gippo-bot --service example-gippo-new
 ```
 
-Re-registering `gippo-bot` with a different `--service` returns a conflict; it
-does not rename the alias. The administrator command preserves consumer
-credentials and active challenges.
+Re-registering a consumer with a different `--service` returns a conflict.
+`set-service` preserves the consumer credentials and active challenges. Update the
+phone payload to use the new alias if the administrator changes it.
 
 The phone sends JSON to the live URL:
 
 ```json
-{"service":"gippo","text":"<incoming SMS>"}
+{"service":"example-gippo","text":"<incoming SMS>"}
 ```
 
-When `gippo` has only one registered sender, `sender` may be omitted. If included,
+When the service has only one registered sender, `sender` may be omitted. If included,
 it must match the registered sender exactly. Sender-only routing is allowed only
 when one service for that owner matches. The test URL validates routing but never
 completes a login.
 
-SMS Forwarder stores unambiguous codes from allowed senders encrypted in its
+SMS Router stores unambiguous codes from allowed senders encrypted in its
 database for up to 24 hours. This history does not extend the bot's challenge TTL
 or supply a code to a later authentication attempt.
 
